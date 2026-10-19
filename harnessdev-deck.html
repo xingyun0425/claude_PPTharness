@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessDev 论文汇报</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1f2a36; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #fff; box-shadow: 0 6px 30px rgba(0,0,0,.35); cursor: pointer; }
+  #hint { position: fixed; left: 12px; bottom: 8px; color: #8a99a8; font: 12px "Microsoft YaHei", sans-serif; opacity: .8; }
+  @media print { #hint { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="deck" role="img" aria-label="HarnessDev 论文汇报幻灯片"></canvas>
+<div id="hint">← → / 空格 翻页 · F 全屏 · S 保存当前页 PNG · Home/End 首末页</div>
+<script>
+'use strict';
+const W = 1600, H = 900;
+const C = {
+  navy: '#163B65', blue: '#347BC1', gold: '#D5B96F', rose: '#C98078',
+  pale: '#EAF2FA', paleRose: '#F3E4E1', line: '#CFDCE8', text: '#243445',
+  grey: '#64748B', neutral: '#8A99A8', white: '#FFFFFF', paleGold: '#F7F0DE'
+};
+const FONT = '"Microsoft YaHei","微软雅黑","PingFang SC","Noto Sans SC",sans-serif';
+const canvas = document.getElementById('deck');
+let ctx = canvas.getContext('2d');
+
+/* ---------- drawing primitives ---------- */
+function font(size, bold) { ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`; }
+function rect(x, y, w, h, fill, stroke, lw = 2) {
+  if (fill) { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.strokeRect(x + lw / 2, y + lw / 2, w - lw, h - lw); }
+}
+function text(s, x, y, o = {}) {
+  const { size = 26, bold = false, color = C.text, align = 'left', base = 'top' } = o;
+  font(size, bold); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.fillText(s, x, y);
+  return ctx.measureText(s).width;
+}
+function line(x1, y1, x2, y2, color = C.line, lw = 2, dash) {
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = lw; if (dash) ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore();
+}
+function arrow(x1, y1, x2, y2, color = C.blue, lw = 4, head = 14) {
+  const a = Math.atan2(y2 - y1, x2 - x1);
+  line(x1, y1, x2 - Math.cos(a) * head * 0.8, y2 - Math.sin(a) * head * 0.8, color, lw);
+  ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - head * Math.cos(a - 0.45), y2 - head * Math.sin(a - 0.45));
+  ctx.lineTo(x2 - head * Math.cos(a + 0.45), y2 - head * Math.sin(a + 0.45));
+  ctx.closePath(); ctx.fill();
+}
+function circle(x, y, r, fill, stroke, lw = 3) {
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+// Wraps by character (CJK-safe) while keeping latin words intact; returns bottom y.
+function wrap(s, x, y, maxW, o = {}) {
+  const { size = 24, bold = false, color = C.text, lh = 1.5, align = 'left' } = o;
+  font(size, bold); ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'top';
+  const tokens = s.match(/[A-Za-z0-9.%+\-−–×/()'_:,]+|\s+|./g) || [];
+  let cur = '', yy = y;
+  const flush = () => { ctx.fillText(cur.trim(), x, yy); yy += size * lh; cur = ''; };
+  for (const t of tokens) {
+    const noBreakBefore = /^[，。；：、）》”！？,.;:)]$/.test(t);
+    if (ctx.measureText(cur + t).width > maxW && cur.trim() && !noBreakBefore) flush();
+    cur += t;
+  }
+  if (cur.trim()) flush();
+  return yy;
+}
+// Rich line: segments [[text, {color,bold}], ...]
+function rich(segs, x, y, size = 24) {
+  let xx = x;
+  for (const [s, o = {}] of segs) xx += text(s, xx, y, { size, ...o });
+  return xx;
+}
+// Renders "_X" (one char, or {..}) as a subscript.
+function formula(s, x, y, size, color, bold = true) {
+  const parts = s.split(/(_\{[^}]*\}|_.)/);
+  let xx = x;
+  for (const p of parts) {
+    if (!p) continue;
+    if (p[0] === '_') {
+      const sub = p[1] === '{' ? p.slice(2, -1) : p[1];
+      xx += text(sub, xx, y + size * 0.42, { size: size * 0.62, bold, color });
+    } else xx += text(p, xx, y, { size, bold, color });
+  }
+  return xx;
+}
+function title(s) { text(s, 84, 52, { size: 40, bold: true, color: C.navy }); }
+function pageNo(n) { text(String(n), 1516, 828, { size: 18, color: C.grey, align: 'right' }); }
+function panel(x, y, w, h, head, fill = C.navy, headH = 56) {
+  rect(x, y + headH, w, h - headH, C.white, C.line, 2);
+  rect(x, y, w, headH, fill);
+  text(head, x + w / 2, y + headH / 2, { size: 25, bold: true, color: C.white, align: 'center', base: 'middle' });
+}
+function band(s, y = 730, h = 70, x = 84, w = 1432) {
+  rect(x, y, w, h, C.pale);
+  text(s, x + w / 2, y + h / 2, { size: 27, bold: true, color: C.navy, align: 'center', base: 'middle' });
+}
+function caption(s, y = 812) { text(s, W / 2, y, { size: 18, color: C.grey, align: 'center' }); }
+function chip(s, x, y, w, h, o = {}) {
+  const { fill = C.pale, color = C.navy, size = 22, stroke = null, bold = true } = o;
+  rect(x, y, w, h, fill, stroke, 2);
+  text(s, x + w / 2, y + h / 2, { size, bold, color, align: 'center', base: 'middle' });
+}
+function bullet(s, x, y, maxW, o = {}) {
+  const { size = 23, color = C.text, dot = C.blue } = o;
+  rect(x, y + size * 0.5, 9, 9, dot);
+  return wrap(s, x + 24, y, maxW - 24, { size, color, lh: 1.45 });
+}
+function numTag(n, x, y, fill = C.blue, r = 22) {
+  circle(x, y, r, fill);
+  text(String(n), x, y + 1, { size: r * 0.95, bold: true, color: C.white, align: 'center', base: 'middle' });
+}
+const MODS = [
+  ['E', '执行', 'Execution', '#163B65'], ['T', '工具', 'Tools', '#347BC1'],
+  ['C', '上下文', 'Context', '#4F9AD6'], ['S', '状态', 'State', '#C98078'],
+  ['L', '生命周期', 'Lifecycle', '#B39552'], ['V', '验证', 'Verification', '#5B7A99']
+];
+const CREATORS = ['Opus 4.8', 'GPT-5.5', 'Gemini 3.1 Pro', 'DeepSeek V4 Pro', 'Qwen 3.7 Max', 'Seed 2.0 Pro'];
+
+/* ---------- SVG illustration kit ---------- */
+const SVG_FONT = 'Microsoft YaHei, 微软雅黑, PingFang SC, Noto Sans SC, sans-serif';
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function el(tag, a = {}, inner = '') {
+  const attrs = Object.entries(a).map(([k, v]) => `${k}="${v}"`).join(' ');
+  return inner === null ? `<${tag} ${attrs}/>` : `<${tag} ${attrs}>${inner}</${tag}>`;
+}
+function measure(s, size, bold) { font(size, bold); return ctx.measureText(s).width; }
+const S = {
+  // "_X" or "_{..}" renders as a subscript.
+  text(s, x, y, { size = 20, bold = false, color = C.text, anchor = 'middle' } = {}) {
+    const inner = String(s).split(/(_\{[^}]*\}|_[A-Za-z0-9])/).filter(Boolean).map(p => p[0] === '_'
+      ? `<tspan font-size="${size * 0.65}" dy="${size * 0.28}">${esc(p[1] === '{' ? p.slice(2, -1) : p[1])}</tspan><tspan dy="${-size * 0.28}">​</tspan>`
+      : esc(p)).join('');
+    return el('text', { x, y, 'font-family': SVG_FONT, 'font-size': size, 'font-weight': bold ? 700 : 400,
+      fill: color, 'text-anchor': anchor, 'dominant-baseline': 'central' }, inner);
+  },
+  pill(s, cx, cy, { size = 18, fill = C.navy, color = C.white, stroke = 'none', padX = 20, h = 38, bold = true, shadow = false } = {}) {
+    const w = measure(s, size, bold) + padX * 2;
+    return el('rect', { x: cx - w / 2, y: cy - h / 2, width: w, height: h, rx: h / 2, fill, stroke, 'stroke-width': 2, filter: shadow ? 'url(#sh)' : 'none' }, null)
+      + S.text(s, cx, cy, { size, bold, color });
+  },
+  halo(cx, cy, r, fill = C.pale) {
+    return el('circle', { cx, cy, r, fill, filter: 'url(#sh)' }, null)
+      + el('circle', { cx, cy, r: r - 10, fill: 'none', stroke: C.white, 'stroke-width': 2, opacity: 0.7 }, null);
+  },
+  arrow(x1, y1, x2, y2, { color = C.blue, w = 3.5, dash = null, curve = null } = {}) {
+    const d = curve ? `M${x1},${y1} Q${curve[0]},${curve[1]} ${x2},${y2}` : `M${x1},${y1} L${x2},${y2}`;
+    return el('path', { d, fill: 'none', stroke: color, 'stroke-width': w, 'stroke-linecap': 'round',
+      'stroke-dasharray': dash || 'none', 'marker-end': `url(#ah-${color.slice(1)})` }, null);
+  },
+  robot(cx, cy, s = 1, { chest = null, accent = C.blue } = {}) {
+    const k = v => v * s, st = { stroke: C.navy, 'stroke-width': 3, 'stroke-linejoin': 'round' };
+    return [
+      el('line', { x1: cx, y1: cy - k(46), x2: cx, y2: cy - k(34), ...st }, null),
+      el('circle', { cx, cy: cy - k(50), r: k(6), fill: accent, ...st }, null),
+      el('rect', { x: cx - k(44), y: cy - k(18), width: k(10), height: k(22), rx: k(4), fill: accent, ...st }, null),
+      el('rect', { x: cx + k(34), y: cy - k(18), width: k(10), height: k(22), rx: k(4), fill: accent, ...st }, null),
+      el('rect', { x: cx - k(36), y: cy - k(34), width: k(72), height: k(54), rx: k(18), fill: C.white, ...st }, null),
+      el('rect', { x: cx - k(25), y: cy - k(23), width: k(50), height: k(30), rx: k(12), fill: C.navy }, null),
+      el('circle', { cx: cx - k(11), cy: cy - k(8), r: k(5), fill: '#9FD4FF' }, null),
+      el('circle', { cx: cx + k(11), cy: cy - k(8), r: k(5), fill: '#9FD4FF' }, null),
+      el('path', { d: `M${cx - k(30)},${cy + k(56)} Q${cx - k(30)},${cy + k(26)} ${cx},${cy + k(26)} Q${cx + k(30)},${cy + k(26)} ${cx + k(30)},${cy + k(56)} Z`, fill: C.white, ...st }, null),
+      chest ? S.text(chest, cx, cy + k(42), { size: k(15), bold: true, color: accent }) : ''
+    ].join('');
+  },
+  doc(x, y, w, h, { stroke = C.navy, fill = C.white, dash = null, lines = 3, lineColor = C.blue } = {}) {
+    const f = Math.min(w, h) * 0.28;
+    let out = el('path', { d: `M${x},${y} H${x + w - f} L${x + w},${y + f} V${y + h} H${x} Z`, fill, stroke, 'stroke-width': 3,
+      'stroke-linejoin': 'round', 'stroke-dasharray': dash || 'none' }, null)
+      + el('path', { d: `M${x + w - f},${y} V${y + f} H${x + w}`, fill: 'none', stroke, 'stroke-width': 3, 'stroke-linejoin': 'round' }, null);
+    for (let i = 0; i < lines; i++) {
+      const ly = y + h * (0.42 + i * 0.18), lw = (w - 24) * (i === lines - 1 ? 0.55 : 1);
+      out += el('line', { x1: x + 12, y1: ly, x2: x + 12 + lw, y2: ly, stroke: lineColor, 'stroke-width': 4, 'stroke-linecap': 'round',
+        'stroke-dasharray': dash ? '6 7' : 'none' }, null);
+    }
+    return out;
+  },
+  lock(cx, cy, s = 1, color = C.navy, body = C.white) {
+    const k = v => v * s;
+    return el('path', { d: `M${cx - k(8)},${cy - k(2)} V${cy - k(8)} A${k(8)},${k(8)} 0 0 1 ${cx + k(8)},${cy - k(8)} V${cy - k(2)}`,
+      fill: 'none', stroke: color, 'stroke-width': k(3.2), 'stroke-linecap': 'round' }, null)
+      + el('rect', { x: cx - k(12), y: cy - k(3), width: k(24), height: k(18), rx: k(4), fill: body, stroke: color, 'stroke-width': k(3) }, null)
+      + el('circle', { cx, cy: cy + k(6), r: k(2.6), fill: color }, null);
+  },
+  eye(cx, cy, s = 1, color = C.blue) {
+    const k = v => v * s;
+    return el('path', { d: `M${cx - k(16)},${cy} Q${cx},${cy - k(14)} ${cx + k(16)},${cy} Q${cx},${cy + k(14)} ${cx - k(16)},${cy} Z`,
+      fill: C.white, stroke: color, 'stroke-width': k(3), 'stroke-linejoin': 'round' }, null)
+      + el('circle', { cx, cy, r: k(5), fill: color }, null);
+  },
+  check(cx, cy, r, color = C.blue) {
+    return el('circle', { cx, cy, r, fill: color, stroke: C.white, 'stroke-width': 3 }, null)
+      + el('path', { d: `M${cx - r * 0.45},${cy} L${cx - r * 0.1},${cy + r * 0.35} L${cx + r * 0.5},${cy - r * 0.35}`,
+        fill: 'none', stroke: C.white, 'stroke-width': 3.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, null);
+  },
+  defs() {
+    const marks = [C.blue, C.gold, C.neutral, C.navy].map(c => el('marker', { id: `ah-${c.slice(1)}`, viewBox: '0 0 10 10', refX: 7, refY: 5,
+      markerWidth: 4.5, markerHeight: 4.5, orient: 'auto-start-reverse' }, el('path', { d: 'M0,0 L10,5 L0,10 Z', fill: c }, null))).join('');
+    return el('defs', {}, marks + el('filter', { id: 'sh', x: '-20%', y: '-20%', width: '140%', height: '150%' },
+      el('feDropShadow', { dx: 0, dy: 5, stdDeviation: 7, 'flood-color': C.navy, 'flood-opacity': 0.13 }, null)));
+  },
+  wrap(w, h, body) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w * 2}" height="${h * 2}" viewBox="0 0 ${w} ${h}">${S.defs()}${body}</svg>`;
+  }
+};
+// Rasterised once per illustration; the slide redraws when its image finishes loading.
+const ILLUS = {};
+function illustration(key, w, h, build) {
+  if (!ILLUS[key]) {
+    const svg = S.wrap(w, h, build());
+    const img = new Image();
+    ILLUS[key] = { svg, img, ready: false };
+    img.onload = () => { ILLUS[key].ready = true; render(); };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  }
+  return ILLUS[key];
+}
+function drawIllustration(key, x, y, w, h, build) {
+  const il = illustration(key, w, h, build);
+  if (il.ready) ctx.drawImage(il.img, x, y, w, h);
+}
+
+const slides = [];
+/* 1. Title */
+slides.push(() => {
+  text('论文汇报 / AGENT HARNESS ENGINEERING', 92, 84, { size: 24, bold: true, color: C.blue });
+  rect(92, 150, 100, 7, C.gold);
+  text('HarnessDev', 92, 196, { size: 78, bold: true, color: C.navy });
+  text('让模型自己造“外壳”', 92, 330, { size: 50, bold: true, color: C.navy });
+  wrap('评测对象从“任务答案”转向“可运行的基础设施”', 92, 432, 760, { size: 30, color: C.text });
+  wrap('HarnessDev: Can LLMs Create and Evolve Their Own Agent Harness?', 92, 540, 740, { size: 24, color: C.grey, lh: 1.35 });
+  wrap('ByteDance Seed · SUTD · Georgia Tech · M-A-P · TokenWave.AI', 92, 652, 760, { size: 21, color: C.grey });
+  text('arXiv:2609.01437v1 [cs.SE] · 2026年9月', 92, 752, { size: 21, color: C.grey });
+  // Illustration: six harness modules orbiting the frozen harness H
+  const cx = 1192, cy = 470, R = 225;
+  rect(884, 166, 616, 616, C.pale);
+  circle(cx, cy, R, null, C.line, 3);
+  MODS.forEach(([k, zh], i) => {
+    const a = -Math.PI / 2 + i * Math.PI / 3, x = cx + R * Math.cos(a), y = cy + R * Math.sin(a);
+    rect(x - 52, y - 52, 104, 104, MODS[i][3]);
+    text(k, x, y - 12, { size: 44, bold: true, color: C.white, align: 'center', base: 'middle' });
+    text(zh, x, y + 30, { size: 18, bold: true, color: C.white, align: 'center', base: 'middle' });
+  });
+  rect(cx - 104, cy - 74, 208, 148, C.white, C.navy, 3);
+  text('H', cx, cy - 22, { size: 58, bold: true, color: C.navy, align: 'center', base: 'middle' });
+  text('Agent Harness', cx, cy + 40, { size: 20, color: C.grey, align: 'center', base: 'middle' });
+  text('Creation  →  Evolution', cx, 752, { size: 22, bold: true, color: C.blue, align: 'center' });
+});
+
+/* 2. Motivation */
+slides.push((n) => {
+  title('模型能力越来越取决于“外壳”，而外壳本身很少被评测');
+  panel(84, 150, 640, 560, '同一模型，换一个 Harness');
+  text('GPT-5 在 Terminal-Bench 2.1 上的成功率', 404, 232, { size: 22, color: C.grey, align: 'center' });
+  const base = 650, top = 300, sc = (base - top) / 60;
+  [[0, 20, 40, 60]].flat().forEach(v => {
+    line(150, base - v * sc, 680, base - v * sc, C.line, 1.5);
+    text(String(v), 140, base - v * sc, { size: 17, color: C.grey, align: 'right', base: 'middle' });
+  });
+  [['Terminus 2', 35.2, C.neutral, 220], ['Codex CLI', 49.6, C.blue, 460]].forEach(([lab, v, col, x]) => {
+    rect(x, base - v * sc, 150, v * sc, col);
+    text(v.toFixed(1) + '%', x + 75, base - v * sc - 40, { size: 30, bold: true, color: col === C.blue ? C.blue : C.text, align: 'center' });
+    text(lab, x + 75, base + 14, { size: 21, color: C.text, align: 'center' });
+  });
+  text('差距 +14.4 pp', 404, 262, { size: 22, bold: true, color: C.gold, align: 'center' });
+  panel(764, 150, 752, 560, '为什么值得单独研究');
+  let y = 236;
+  [
+    ['外壳决定能力', 'Agent 的循环、工具、上下文、恢复与验证都在模型权重之外。'],
+    ['现有评测把它固定', 'SWE-bench、GAIA、WebArena、τ-bench 都把 Harness 当作实验配置，而非被开发的产物。'],
+    ['改外壳 ≠ 改代码', '模型修改的是自己今后观察、规划和恢复所依赖的底座，需要从轨迹中诊断结构瓶颈。'],
+    ['难以公平评估', '可能过拟合作者模型、记忆开发样例、悄悄回退，或只在反馈集上涨分。']
+  ].forEach(([h, d], i) => {
+    numTag(i + 1, 812, y + 16, i % 2 ? C.blue : C.navy);
+    text(h, 850, y, { size: 25, bold: true, color: C.navy });
+    y = wrap(d, 850, y + 40, 630, { size: 21, color: C.text, lh: 1.4 }) + 18;
+  });
+  band('核心问题：LLM 能否自己创建并持续演化一个可运行的 Agent Harness？', 736, 64);
+  pageNo(n);
+});
+/* Slide 3 illustration, in slide pixels (origin at x=84, y=136). */
+function overviewSvg() {
+  const o = [];
+  const zone = (x, y, w, h, fill = '#F5F9FD', stroke = C.line) =>
+    el('rect', { x, y, width: w, height: h, rx: 18, fill, stroke, 'stroke-width': 2 }, null);
+  const row = (labels, cx, cy, opt) => {
+    const gap = 8, ws = labels.map(s => measure(s, opt.size, opt.bold) + opt.padX * 2);
+    let x = cx - (ws.reduce((a, b) => a + b, 0) + gap * (labels.length - 1)) / 2;
+    return labels.map((s, i) => { const r = S.pill(s, x + ws[i] / 2, cy, opt); x += ws[i] + gap; return r; }).join('');
+  };
+
+  // ---- left: existing benchmarks ----
+  o.push(zone(0, 14, 430, 506));
+  o.push(S.pill('现有 Agent 评测', 215, 14, { size: 21, fill: C.neutral, h: 44, padX: 26, shadow: true }));
+  o.push(row(['SWE-bench', 'GAIA', 'WebArena', 'τ-bench'], 215, 78, { size: 15, fill: C.white, color: C.grey, stroke: C.line, padX: 12, h: 30, bold: true }));
+  o.push(el('rect', { x: 28, y: 122, width: 374, height: 258, rx: 16, fill: C.white, stroke: C.neutral, 'stroke-width': 2.5, 'stroke-dasharray': '9 7' }, null));
+  o.push(S.pill('固定 Harness', 215, 122, { size: 16, fill: C.white, color: C.grey, stroke: C.neutral, h: 32, padX: 14 }));
+  o.push(row(['tools', 'context', 'memory', 'loop', 'verify'], 215, 168, { size: 14, fill: '#EEF1F5', color: C.grey, padX: 10, h: 28, bold: false }));
+  o.push(S.lock(390, 124, 0.75, C.neutral));
+  o.push(S.halo(118, 272, 64, C.pale));
+  o.push(S.robot(118, 268, 0.95, { accent: C.neutral }));
+  o.push(S.text('Agent', 118, 356, { size: 16, bold: true, color: C.grey }));
+  o.push(S.arrow(196, 272, 252, 272, { color: C.neutral }));
+  o.push(S.doc(266, 228, 74, 90, { stroke: C.neutral, lineColor: C.line }));
+  o.push(S.text('单个任务', 303, 342, { size: 16, color: C.grey }));
+  o.push(S.arrow(303, 384, 303, 418, { color: C.neutral }));
+  o.push(S.pill('被评对象：答案', 215, 452, { size: 20, fill: C.white, color: C.navy, stroke: C.line, h: 44, padX: 22, shadow: true }));
+  o.push(S.text('外壳只是固定的实验配置', 215, 496, { size: 16, color: C.grey }));
+
+  // ---- transition ----
+  o.push(el('path', { d: 'M446,252 L478,252 L478,238 L504,266 L478,294 L478,280 L446,280 Z', fill: C.gold }, null));
+
+  // ---- right: HarnessDev ----
+  o.push(zone(518, 14, 914, 506));
+  o.push(S.pill('HarnessDev：模型不仅解题，还要构建系统', 975, 14, { size: 21, fill: C.navy, h: 44, padX: 28, shadow: true }));
+
+  // RQ1 Creation
+  o.push(S.pill('RQ1', 566, 70, { size: 15, fill: C.blue, h: 28, padX: 12 }));
+  o.push(S.text('Creation · 从弱种子构建完整外壳', 596, 70, { size: 19, bold: true, color: C.navy, anchor: 'start' }));
+  o.push(S.halo(618, 176, 58, C.paleRose));
+  o.push(S.doc(588, 136, 60, 76, { stroke: C.rose, dash: '7 6', lineColor: C.rose }));
+  o.push(S.text('弱种子 H_{seed}', 618, 252, { size: 17, bold: true, color: C.rose }));
+  o.push(S.text('无循环 · 无规划 · 无验证', 618, 276, { size: 14, color: C.grey }));
+  o.push(S.arrow(684, 176, 734, 176));
+  o.push(S.halo(800, 176, 58, C.pale));
+  o.push(S.robot(800, 172, 0.92, { accent: C.blue }));
+  o.push(S.text('创建者 L_C', 800, 252, { size: 17, bold: true, color: C.navy }));
+  o.push(S.text('读 · 改 · 自测', 800, 276, { size: 14, color: C.grey }));
+  o.push(S.arrow(866, 176, 916, 176));
+  o.push(S.text('开发', 891, 154, { size: 15, bold: true, color: C.blue }));
+  o.push(el('rect', { x: 928, y: 110, width: 214, height: 134, rx: 16, fill: C.white, stroke: C.line, 'stroke-width': 2, filter: 'url(#sh)' }, null));
+  MODS.forEach(([k, zh, , col], i) => {
+    const x = 944 + (i % 3) * 64, y = 124 + Math.floor(i / 3) * 56;
+    o.push(el('rect', { x, y, width: 54, height: 48, rx: 10, fill: col }, null));
+    o.push(S.text(k, x + 27, y + 18, { size: 21, bold: true, color: C.white }));
+    o.push(S.text(zh, x + 27, y + 38, { size: 10, bold: true, color: C.white }));
+  });
+  o.push(S.check(1136, 116, 15));
+  o.push(S.text('可运行 H0', 1035, 268, { size: 17, bold: true, color: C.navy }));
+  // visibility card
+  o.push(el('rect', { x: 1178, y: 112, width: 230, height: 130, rx: 14, fill: C.paleGold, stroke: '#E9DAB3', 'stroke-width': 2 }, null));
+  o.push(S.eye(1210, 148, 1, C.blue));
+  o.push(S.text('1–3 个开发样例可见', 1236, 148, { size: 16, color: C.text, anchor: 'start' }));
+  o.push(el('line', { x1: 1196, y1: 177, x2: 1390, y2: 177, stroke: '#E9DAB3', 'stroke-width': 2 }, null));
+  o.push(S.lock(1210, 206, 1, C.navy));
+  o.push(S.text('隐藏评测集保留', 1236, 206, { size: 16, bold: true, color: C.navy, anchor: 'start' }));
+
+  o.push(el('line', { x1: 546, y1: 306, x2: 1404, y2: 306, stroke: C.line, 'stroke-width': 2, 'stroke-dasharray': '6 6' }, null));
+
+  // RQ2 Evolution
+  o.push(S.pill('RQ2', 566, 336, { size: 15, fill: C.blue, h: 28, padX: 12 }));
+  o.push(S.text('Evolution · 用执行反馈持续迭代', 596, 336, { size: 19, bold: true, color: C.navy, anchor: 'start' }));
+  const vers = [['H0', '来自 Creation', ['loop', 'tools']], ['H1', '+ 上下文压缩', ['retry ×3']], ['Hn', '+ 记忆 / 验证门', ['memory', 'verify']]];
+  vers.forEach(([h, d, tags], i) => {
+    const x = 548 + i * 214, y = 372, dark = i === 2;
+    o.push(el('rect', { x, y, width: 168, height: 100, rx: 14, fill: dark ? C.navy : C.white, stroke: dark ? C.navy : C.line, 'stroke-width': 2, filter: 'url(#sh)' }, null));
+    o.push(S.text(h, x + 34, y + 30, { size: 26, bold: true, color: dark ? C.white : C.navy }));
+    o.push(S.text(d, x + 64, y + 32, { size: 14, color: dark ? C.pale : C.grey, anchor: 'start' }));
+    o.push(row(tags, x + 84, y + 70, { size: 13, fill: dark ? '#2B5A8C' : C.pale, color: dark ? C.white : C.navy, padX: 10, h: 26, bold: true }));
+    if (i < 2) o.push(S.arrow(x + 176, y + 50, x + 206, y + 50));
+  });
+  o.push(S.pill('隐藏回退？', 1164, 364, { size: 13, fill: C.rose, h: 24, padX: 10 }));
+  // feedback board
+  o.push(S.arrow(1196, 422, 1236, 422));
+  o.push(el('rect', { x: 1248, y: 362, width: 160, height: 120, rx: 14, fill: C.white, stroke: C.line, 'stroke-width': 2, filter: 'url(#sh)' }, null));
+  o.push(S.text('反馈集', 1328, 384, { size: 15, bold: true, color: C.navy }));
+  [['SWE-Pro 100', 0.58, C.blue], ['Terminal 89', 0.74, C.gold]].forEach(([l, v, c], i) => {
+    const y = 410 + i * 34;
+    o.push(S.text(l, 1262, y, { size: 12, color: C.grey, anchor: 'start' }));
+    o.push(el('rect', { x: 1262, y: y + 9, width: 132, height: 8, rx: 4, fill: C.pale }, null));
+    o.push(el('rect', { x: 1262, y: y + 9, width: 132 * v, height: 8, rx: 4, fill: c }, null));
+  });
+  // feedback loop: board → back to the version chain
+  o.push(S.arrow(1328, 488, 846, 480, { color: C.gold, dash: '8 7', w: 3, curve: [1090, 548] }));
+  o.push(S.text('读反馈 → 诊断 → 修改 → 冻结新版本', 1088, 494, { size: 14, bold: true, color: '#A88A3F' }));
+  o.push(S.check(564, 496, 9));
+  o.push(S.text('每个版本冻结、可运行', 580, 496, { size: 14, color: C.grey, anchor: 'start' }));
+  return o.join('');
+}
+
+/* 3. Benchmark overview (Fig.1) */
+slides.push((n) => {
+  title('HarnessDev 把评测单元从“任务答案”换成“可运行的外壳”');
+  drawIllustration('overview', 84, 136, 1432, 524, overviewSvg);
+  // formalism band
+  rect(84, 676, 1432, 116, C.pale);
+  formula('(L_C, D)  →  H          (H, L_E, x)  →  y  →  score (J)', 120, 696, 30, C.navy);
+  formula('创建者 L_C 在开发环境 D 中产出外壳 H；H 冻结后，再交给执行者 L_E 运行下游任务 x', 120, 750, 21, C.text, false);
+  pageNo(n);
+});
+/* 4. Seed + six modules (Fig.2/3) */
+slides.push((n) => {
+  title('弱种子只提供接口与原语，控制层的六个模块全靠模型自己写');
+  panel(84, 150, 520, 560, '弱种子 H_seed：可运行、可审计、无策略', C.rose);
+  text('单次“不行动”流程', 108, 228, { size: 21, bold: true, color: C.navy });
+  ['读输入', '解析任务', '连通探测', '写审计'].forEach((s, i) => {
+    chip(s, 108 + i * 118, 266, 100, 48, { size: 19, fill: C.pale });
+    if (i < 3) arrow(210 + i * 118, 290, 224 + i * 118, 290, C.blue, 3, 9);
+  });
+  text('状态恒为 partial，未修改时所有基准得分 = 0', 108, 330, { size: 18, color: C.rose });
+  text('被动原语（可用但不编排）', 108, 380, { size: 21, bold: true, color: C.navy });
+  ['Paths', 'Files', 'Search', 'Process', 'LLM 网关', 'Artifact I/O'].forEach((s, i) =>
+    chip(s, 108 + (i % 3) * 158, 418 + Math.floor(i / 3) * 56, 146, 46, { size: 18, fill: C.white, stroke: C.line, color: C.text, bold: false }));
+  text('不提供的控制层', 108, 548, { size: 21, bold: true, color: C.navy });
+  ['执行循环 / 工具策略', '持久状态 / 恢复', '上下文管理', '验证器 / 停止规则'].forEach((s, i) => {
+    const x = 108 + (i % 2) * 238, y = 590 + Math.floor(i / 2) * 50;
+    text('✕', x, y, { size: 21, bold: true, color: C.rose });
+    text(s, x + 28, y, { size: 19, color: C.text });
+  });
+  // right: 6 modules
+  panel(636, 150, 880, 560, '创建者实现的控制平面 H = ⟨E, T, C, S, L, V⟩');
+  const desc = [
+    '循环、规划、停止条件、调度', '接口、选择、I/O 约束、错误处理', '任务/代码/日志/历史如何进入上下文',
+    '目标、假设、进度、失败与产物状态', '前后钩子、失败与超时、恢复、收尾', '测试、检查、裁判、产物与轨迹校验'];
+  MODS.forEach(([k, zh, en, col], i) => {
+    const x = 660 + (i % 2) * 422, y = 230 + Math.floor(i / 2) * 118;
+    rect(x, y, 70, 96, col);
+    text(k, x + 35, y + 48, { size: 40, bold: true, color: C.white, align: 'center', base: 'middle' });
+    rect(x + 70, y, 330, 96, C.pale);
+    text(`${zh}  ${en}`, x + 88, y + 14, { size: 22, bold: true, color: C.navy });
+    wrap(desc[i], x + 88, y + 50, 300, { size: 18, color: C.text, lh: 1.3 });
+  });
+  text('统一审计契约：result.json · trajectory.jsonl · response.md · 日志；领域终结器输出可评分产物', 1076, 600, { size: 18, color: C.grey, align: 'center' });
+  text('代码→仓库补丁　数据→提交与指标　写作→成稿　检索→答案与证据', 1076, 640, { size: 18, color: C.grey, align: 'center' });
+  band('创建者实现的是“控制层”，而不是下游任务的答案', 736, 64);
+  pageNo(n);
+});
+
+/* 5. Protocols */
+slides.push((n) => {
+  title('两阶段协议：Creation 只看少量样例，Evolution 依靠反馈对迭代');
+  panel(84, 150, 700, 480, 'RQ1 Creation：从弱种子到冻结的 H');
+  let y = 232;
+  [
+    '输入：H_seed、任务族说明、工具与权限约束、简短设计教程、1–3 个开发样例',
+    '永远看不到人类实现或隐藏评测集；评测前 H 必须冻结',
+    '统一 CLI：python -m harness run --task-json … --model-config … --output-dir …',
+    '必须如实写出状态 success / partial / failed，自报状态从不计分',
+    '每个创建者×基准独立构建 3 个外壳，报告 avg@3'
+  ].forEach(s => { y = bullet(s, 112, y, 640, { size: 21 }) + 14; });
+  panel(816, 150, 700, 480, 'RQ2 Evolution：在自己的 H0 上迭代');
+  y = 232;
+  [
+    '反馈集：SWE-Pro 100 题 + Terminal-Bench 2.1 全部 89 题',
+    '预算：10 个正式“评测对”（两基准完整跑一遍），对之间最多 2 次 5 题探测',
+    '控制器不做接受/拒绝、不挑最优、不回滚，最终版本由创建者自行声明',
+    '另用 630 道互不重叠的 SWE-Pro 题做留出评测，结果从不展示给创建者',
+    '单题上限 500 步 / 7,200 秒'
+  ].forEach(s => { y = bullet(s, 844, y, 640, { size: 21 }) + 14; });
+  rect(84, 656, 700, 144, C.pale);
+  text('Self-Eval', 112, 674, { size: 25, bold: true, color: C.navy });
+  formula('L_E = L_C：模型运行自己写的外壳，对应真实部署', 112, 718, 21, C.text, false);
+  text('衡量“模型—外壳”协同设计', 112, 756, { size: 19, color: C.grey });
+  rect(816, 656, 700, 144, C.navy);
+  text('Unified-Eval', 844, 674, { size: 25, bold: true, color: C.white });
+  text('固定执行者 Gemini 3.1 Pro 运行所有外壳', 844, 718, { size: 21, color: C.white });
+  text('剥离执行模型，单独看外壳质量与可迁移性', 844, 756, { size: 19, color: C.pale });
+  pageNo(n);
+});
+/* 6. Setup */
+slides.push((n) => {
+  title('四个领域、五个基准、2,207 个下游实例，六个创建者模型');
+  // table
+  const cols = [['领域', 190], ['基准', 330], ['任务数', 150], ['主指标', 210]];
+  let x0 = 84, y0 = 158, rh = 60;
+  let x = x0;
+  cols.forEach(([h, w], i) => { rect(x, y0, w, 60, i % 2 ? C.blue : C.navy); text(h, x + w / 2, y0 + 30, { size: 22, bold: true, color: C.white, align: 'center', base: 'middle' }); x += w; });
+  const rows = [
+    ['代码', 'SWE-bench Pro（公开集）', '731', '任务成功率'],
+    ['代码', 'Terminal-Bench 2.1', '89', '任务成功率'],
+    ['数据分析 / ML', 'MLE-bench', '75', '奖牌分'],
+    ['写作', 'EQ-Bench3', '46', '量表评分'],
+    ['检索与研究', 'BrowseComp', '1,266', '准确率']
+  ];
+  rows.forEach((r, i) => {
+    const y = y0 + 60 + i * rh; x = x0;
+    rect(x0, y, 880, rh, i % 2 ? C.white : C.pale);
+    r.forEach((c, j) => { text(c, x + cols[j][1] / 2, y + rh / 2, { size: 21, color: C.text, bold: j === 1, align: 'center', base: 'middle' }); x += cols[j][1]; });
+    line(x0, y + rh, x0 + 880, y + rh, C.line, 2);
+  });
+  rect(x0, y0 + 60 + 5 * rh, 880, rh, C.navy);
+  text('合计 2,207 个唯一实例；Evolution 目前只覆盖代码领域', x0 + 440, y0 + 90 + 5 * rh, { size: 21, bold: true, color: C.white, align: 'center', base: 'middle' });
+  // creators
+  panel(1000, 158, 516, 420, '创建者 LLM（均为高推理强度）');
+  CREATORS.forEach((c, i) => {
+    const y = 236 + i * 54;
+    rect(1024, y, 8, 36, i % 2 ? C.blue : C.navy);
+    text(c, 1048, y + 18, { size: 22, bold: true, color: C.navy, base: 'middle' });
+    text(c === 'GPT-5.5' ? 'Codex 0.144.3' : 'Claude Code 2.1.177', 1492, y + 18, { size: 17, color: C.grey, align: 'right', base: 'middle' });
+  });
+  rect(1000, 600, 516, 100, C.paleGold);
+  text('人类参考：成熟外壳 + 配套模型', 1024, 616, { size: 20, bold: true, color: C.navy });
+  text('外部系统级结果，并非配对对照', 1024, 656, { size: 18, color: C.text });
+  band('度量两个维度：能力（留出任务成功率）与效率（执行者 token 开销，不含创建者）', 736, 64);
+  pageNo(n);
+});
+/* 7. RQ1 Self-Eval table */
+slides.push((n) => {
+  title('RQ1：最强的 Opus 4.8 平均 67.8，仍落后人类参考 18.4 分');
+  const kpis = [['67.8', 'Opus 4.8 平均分（最高）', C.navy], ['86.2', '人类外壳 + 配套模型', C.pale], ['32.9', 'Opus MLE 奖牌分 > 人类 24.0', C.pale], ['19×', 'MLE-bench token 开销差距', C.pale]];
+  kpis.forEach(([v, l, f], i) => {
+    const x = 84 + i * 366;
+    rect(x, 146, 334, 104, f);
+    text(v, x + 167, 186, { size: 46, bold: true, color: f === C.navy ? C.white : C.navy, align: 'center', base: 'middle' });
+    text(l, x + 167, 230, { size: 18, color: f === C.navy ? C.pale : C.grey, align: 'center', base: 'middle' });
+  });
+  const hdr = ['Self-Eval（avg@3）', 'SWE-Pro', 'Term-2.1', 'MLE', 'EQ-Bench3', 'BrowseComp', '平均*'];
+  const cw = [330, 180, 180, 180, 190, 200, 172];
+  const data = [
+    ['弱种子 H_seed', 0, 0, 0, 0, 0, 0],
+    ['Opus 4.8', 69.3, 64.8, 32.9, 84.6, 52.4, 67.8],
+    ['GPT-5.5', 32.8, 52.1, 19.1, 83.0, 52.6, 55.1],
+    ['Gemini 3.1 Pro', 43.6, 68.8, 32.4, 74.8, 35.2, 55.6],
+    ['DeepSeek V4 Pro', 28.9, 35.6, 19.6, 75.4, 40.9, 45.2],
+    ['Qwen 3.7 Max', 33.5, 41.3, 3.1, 68.7, 32.3, 44.0],
+    ['Seed 2.0 Pro', 10.8, 6.0, 5.3, 71.1, 3.2, 22.8],
+    ['人类外壳 + 配套模型', '80.0†', '88.8†', 24.0, 83.7, '92.2†', 86.2]
+  ];
+  let y = 272, x = 84;
+  hdr.forEach((h, i) => { rect(x, y, cw[i], 50, i === 0 ? C.navy : C.blue); text(h, x + cw[i] / 2, y + 25, { size: 20, bold: true, color: C.white, align: 'center', base: 'middle' }); x += cw[i]; });
+  // column maxima among creators (rows 1..6)
+  const best = [1, 2, 3, 4, 5, 6].map(j => Math.max(...data.slice(1, 7).map(r => r[j])));
+  data.forEach((r, i) => {
+    y = 322 + i * 50; x = 84;
+    const human = i === 7;
+    rect(84, y, 1432, 50, human ? C.paleGold : (i % 2 ? C.white : C.pale));
+    r.forEach((c, j) => {
+      const isBest = j > 0 && i > 0 && i < 7 && c === best[j - 1];
+      const s = typeof c === 'number' ? c.toFixed(1) : c;
+      text(s, x + cw[j] / 2, y + 25, { size: 21, bold: isBest || j === 0 || j === 6, color: isBest ? C.blue : (j === 0 ? C.navy : C.text), align: 'center', base: 'middle' });
+      x += cw[j];
+    });
+    line(84, y + 50, 1516, y + 50, C.line, 1.5);
+  });
+  caption('* 平均为 SWE-Pro、Terminal、EQ-Bench3、BrowseComp 的算术平均　† 外部报告值，作者未复跑　蓝色加粗 = 各列创建者最优', 748);
+  band('写作接近参考、ML 实验超过参考；代码落后，检索差距最大', 776, 46);
+  pageNo(n);
+});
+/* 8. % of human reference (Fig.4) */
+slides.push((n) => {
+  title('相对人类参考：写作与 ML 实验已达标，代码与检索仍有明显差距');
+  const bm = [['SWE-Pro', '80.0'], ['Terminal-2.1', '88.8'], ['MLE-bench', '24.0'], ['EQ-Bench3', '83.7'], ['BrowseComp', '92.2']];
+  const pct = [
+    [86.6, 73.0, 137.1, 101.1, 56.8], [41.0, 58.7, 79.6, 99.2, 57.0], [54.5, 77.5, 135.0, 89.4, 38.2],
+    [36.1, 40.1, 81.7, 90.1, 44.4], [41.9, 46.5, 12.9, 82.1, 35.0], [13.5, 6.8, 22.1, 84.9, 3.5]];
+  const short = ['Opus', 'GPT-5.5', 'Gemini', 'DeepSeek', 'Qwen', 'Seed'];
+  const labW = 110, pw = 254, gap = 12, top = 222, rowH = 70, maxV = 150;
+  bm.forEach(([b, ref], k) => {
+    const px = 84 + labW + k * (pw + gap);
+    rect(px, 150, pw, 52, k % 2 ? C.blue : C.navy);
+    text(b, px + pw / 2, 166, { size: 20, bold: true, color: C.white, align: 'center', base: 'middle' });
+    text('参考 ' + ref, px + pw / 2, 190, { size: 14, color: C.pale, align: 'center', base: 'middle' });
+    const sx = v => px + 8 + (pw - 64) * v / maxV;
+    [0, 50, 100, 150].forEach(t => {
+      line(sx(t), top, sx(t), top + rowH * 6, C.line, 1.2);
+      text(String(t), sx(t), top + rowH * 6 + 8, { size: 14, color: C.grey, align: 'center' });
+    });
+    line(sx(100), top - 6, sx(100), top + rowH * 6, C.gold, 3, [8, 6]);
+    pct.forEach((r, i) => {
+      const v = r[k], y = top + i * rowH + 16;
+      const col = v >= 100 ? C.blue : (v < 40 ? C.rose : C.neutral);
+      rect(sx(0), y, sx(Math.min(v, maxV)) - sx(0), 38, col);
+      text(Math.round(v) + '%', sx(Math.min(v, maxV)) + 6, y + 19, { size: 16, bold: true, color: v >= 100 ? C.blue : C.text, base: 'middle' });
+    });
+  });
+  short.forEach((s, i) => text(s, 84 + labW - 12, top + i * rowH + 35, { size: 20, bold: true, color: C.navy, align: 'right', base: 'middle' }));
+  text('% of human reference', 84 + labW + (5 * pw + 4 * gap) / 2, top + rowH * 6 + 32, { size: 16, color: C.grey, align: 'center' });
+  // legend
+  [[C.blue, '≥ 100%'], [C.neutral, '40–100%'], [C.rose, '< 40%']].forEach(([c, l], i) => {
+    rect(1060 + i * 150, 708, 26, 14, c); text(l, 1094 + i * 150, 715, { size: 16, color: C.grey, base: 'middle' });
+  });
+  line(780, 715, 820, 715, C.gold, 3, [8, 6]); text('人类参考 = 100%', 828, 715, { size: 16, color: C.grey, base: 'middle' });
+  band('EQ-Bench3 上所有创建者都达到参考的 82% 以上；BrowseComp 上无人超过 57%', 744, 60);
+  pageNo(n);
+});
+
+/* 9. Portability (Fig.6) */
+slides.push((n) => {
+  title('换成固定执行者后分数大幅波动：外壳质量与作者模型深度耦合');
+  const self = [[69.3, 64.8, 32.9, 84.6, 52.4], [32.8, 52.1, 19.1, 83.0, 52.6], [43.6, 68.8, 32.4, 74.8, 35.2],
+                [28.9, 35.6, 19.6, 75.4, 40.9], [33.5, 41.3, 3.1, 68.7, 32.3], [10.8, 6.0, 5.3, 71.1, 3.2]];
+  const uni = [[33.0, 52.4, 16.9, 74.2, 53.6], [27.8, 49.4, 16.0, 46.5, 55.4], [43.6, 68.8, 32.4, 74.8, 35.2],
+               [29.2, 38.2, 9.8, 72.9, 54.8], [41.3, 48.6, 16.0, 71.5, 49.9], [15.6, 13.1, 13.3, 73.1, 17.3]];
+  const bm = ['SWE-Pro', 'Terminal-2.1', 'MLE-bench', 'EQ-Bench3', 'BrowseComp'];
+  const rng = [[0, 80], [0, 80], [0, 40], [40, 90], [0, 80]];
+  const short = ['Opus', 'GPT-5.5', 'Gemini', 'DeepSeek', 'Qwen', 'Seed'];
+  const labW = 110, pw = 254, gap = 12, top = 216, rowH = 66;
+  bm.forEach((b, k) => {
+    const px = 84 + labW + k * (pw + gap), [lo, hi] = rng[k];
+    rect(px, 150, pw, 48, k % 2 ? C.blue : C.navy);
+    text(b, px + pw / 2, 174, { size: 20, bold: true, color: C.white, align: 'center', base: 'middle' });
+    const sx = v => px + 14 + (pw - 28) * (v - lo) / (hi - lo);
+    const ticks = k === 2 ? [0, 20, 40] : (k === 3 ? [40, 65, 90] : [0, 40, 80]);
+    ticks.forEach(t => { line(sx(t), top, sx(t), top + rowH * 6, C.line, 1.2); text(String(t), sx(t), top + rowH * 6 + 8, { size: 14, color: C.grey, align: 'center' }); });
+    for (let i = 0; i < 6; i++) {
+      const y = top + i * rowH + rowH / 2, a = self[i][k], u = uni[i][k], d = u - a;
+      if (i % 2 === 0) rect(px, top + i * rowH, pw, rowH, 'rgba(234,242,250,0.55)');
+      line(sx(a), y, sx(u), y, Math.abs(d) < 0.05 ? C.line : (d > 0 ? C.blue : C.rose), 4);
+      circle(sx(a), y, 9, C.navy);
+      circle(sx(u), y, 9, C.white, d >= 0 ? C.blue : C.rose, 3);
+      if (Math.abs(d) >= 0.05) {
+        const s = (d > 0 ? '+' : '−') + Math.abs(d).toFixed(1);
+        text(s, (sx(a) + sx(u)) / 2, y - 26, { size: 15, bold: Math.abs(d) >= 10, color: d > 0 ? C.blue : C.rose, align: 'center' });
+      } else text('对照', sx(a), y - 26, { size: 14, color: C.grey, align: 'center' });
+    }
+  });
+  short.forEach((s, i) => text(s, 84 + labW - 12, top + i * rowH + rowH / 2, { size: 20, bold: true, color: C.navy, align: 'right', base: 'middle' }));
+  circle(500, 660, 9, C.navy); text('Self-Eval（作者模型执行）', 518, 660, { size: 17, color: C.grey, base: 'middle' });
+  circle(800, 660, 9, C.white, C.blue, 3); text('Unified-Eval（固定 Gemini 3.1 Pro 执行）', 818, 660, { size: 17, color: C.grey, base: 'middle' });
+  rect(84, 690, 700, 116, C.paleRose);
+  text('Opus 4.8：SWE-Pro 69.3 → 33.0', 108, 706, { size: 23, bold: true, color: C.rose });
+  wrap('硬编码 120 步上限，自评时可用，换执行者几近崩溃；检索外壳重复查询率 10.1% → 88.2%', 108, 744, 652, { size: 18, color: C.text, lh: 1.35 });
+  rect(816, 690, 700, 116, C.pale);
+  text('Qwen 3.7 Max：BrowseComp +17.6，MLE +12.9', 840, 706, { size: 23, bold: true, color: C.blue });
+  wrap('部分外壳在更强执行者下反而受益：外壳的“可迁移质量”与“作者协同适配”难以区分', 840, 744, 652, { size: 18, color: C.text, lh: 1.35 });
+  pageNo(n);
+});
+/* 10. Mechanism analysis (Fig.5 + §4) */
+slides.push((n) => {
+  title('外壳里写了什么：执行循环人人都有，状态与记忆几乎缺席');
+  panel(84, 150, 720, 560, '18 个代码外壳的机制覆盖');
+  const items = [['执行循环', 18], ['验证', 15], ['工具完整', 13], ['生命周期', 13], ['定义 State 类', 11], ['提供 save 接口', 1], ['实际做检查点', 1]];
+  const bx = 300, bw = 420;
+  items.forEach(([l, v], i) => {
+    const y = 236 + i * 58;
+    text(l, bx - 16, y + 18, { size: 21, color: C.text, align: 'right', base: 'middle' });
+    rect(bx, y, bw, 36, C.pale);
+    rect(bx, y, bw * v / 18, 36, i >= 4 ? C.rose : C.blue);
+    text(`${v}/18`, bx + bw * v / 18 + 10, y + 18, { size: 19, bold: true, color: i >= 4 ? C.rose : C.navy, base: 'middle' });
+  });
+  wrap('26,679 条轨迹中没有出现任何一次检查点事件', 112, 650, 670, { size: 20, bold: true, color: C.rose });
+  // heatmap-ish evidence (Fig.5 approx)
+  panel(836, 150, 680, 330, '机制证据密度（示意，近似自 Fig.5）');
+  const cols = ['循环', '工具', '上下文', '状态', '生命周期', '验证'];
+  const hv = [[1.0, .9, .9, .3, .9, .8], [.9, .9, .7, .15, .6, .7], [.7, .5, .45, .15, .5, .4], [.9, .8, .7, .3, .8, .7], [.9, .7, .7, .15, .7, .7], [.8, .7, .6, .3, .7, .7]];
+  const cx0 = 870, cy0 = 236, cwid = 102, chh = 36;
+  cols.forEach((c, j) => text(c, cx0 + j * cwid + cwid / 2, cy0 - 4, { size: 17, color: C.grey, align: 'center', base: 'bottom' }));
+  const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+  hv.forEach((r, i) => r.forEach((v, j) => {
+    const col = `rgb(${lerp(238, 8, v)},${lerp(244, 59, v)},${lerp(252, 145, v)})`;
+    rect(cx0 + j * cwid + 2, cy0 + i * chh + 2, cwid - 4, chh - 4, col);
+  }));
+  text('每行一个创建者（聚合 RQ1/RQ2），颜色越深证据越多；“状态”列最浅', 1176, 476, { size: 15, color: C.grey, align: 'center', base: 'bottom' });
+  // dead mechanisms
+  panel(836, 500, 680, 210, '写了不等于用了', C.blue);
+  rich([['108', { bold: true, color: C.navy }], [' 个代码组件：', {}], ['72', { bold: true, color: C.blue }], [' 实际触发 · 18 部分证据 · ', {}], ['18', { bold: true, color: C.rose }], [' 从未观测', {}]], 860, 574, 20);
+  rich([['587', { bold: true, color: C.navy }], [' 项写作特性中 ', {}], ['124', { bold: true, color: C.rose }], [' 项为确认的死代码', {}]], 860, 614, 20);
+  rich([['441/2,325', { bold: true, color: C.rose }], [' 个数据任务提交退化结果，无一被外壳发现', {}]], 860, 654, 20);
+  band('自测次数与得分几乎无关（Spearman 0.13–0.26），修订调用次数相关性 0.57（p≈.0005）', 736, 64);
+  pageNo(n);
+});
+/* 11. RQ2 gains (Table 6) */
+slides.push((n) => {
+  title('RQ2：反馈集全部涨分，留出集增益有限，换执行者后多数回退');
+  const rows = [
+    ['Self', 'Gemini 3.1 Pro', 8.8, 2.70], ['Self', 'Opus 4.8', 3.0, 4.44], ['Self', 'Qwen 3.7 Max', 13.9, 1.43],
+    ['Self', 'DeepSeek V4 Pro', 13.4, 3.17], ['Self', 'GPT-5.5', 5.9, 3.81],
+    ['Fixed', 'Opus 4.8', 9.7, 2.70], ['Fixed', 'Qwen 3.7 Max', 1.1, -1.11], ['Fixed', 'DeepSeek V4 Pro', 6.5, -2.38], ['Fixed', 'GPT-5.5', 2.4, -10.32]];
+  const zx = 760, sc = 30, top = 196, rh = 56;
+  rect(84, 150, 1432, 40, C.white);
+  text('执行者', 120, 170, { size: 18, bold: true, color: C.grey, base: 'middle' });
+  text('创建者', 250, 170, { size: 18, bold: true, color: C.grey, base: 'middle' });
+  [-10, -5, 0, 5, 10, 15].forEach(t => {
+    line(zx + t * sc, top, zx + t * sc, top + rh * 9, t === 0 ? C.grey : C.line, t === 0 ? 2.5 : 1.2);
+    text((t > 0 ? '+' : '') + t, zx + t * sc, top + rh * 9 + 8, { size: 15, color: C.grey, align: 'center' });
+  });
+  text('增益（百分点）', zx, top + rh * 9 + 32, { size: 16, color: C.grey, align: 'center' });
+  rows.forEach(([s, c, fb, ho], i) => {
+    const y = top + i * rh;
+    if (i === 5) line(84, y, 1260, y, C.navy, 2, [6, 5]);
+    if (i === 0 || i === 5) {
+      rect(96, y + 8, 116, i === 0 ? rh * 5 - 16 : rh * 4 - 16, s === 'Self' ? C.navy : C.blue);
+      text(s === 'Self' ? '自身' : '固定 Gemini', 154, y + (i === 0 ? rh * 2.5 : rh * 2), { size: 18, bold: true, color: C.white, align: 'center', base: 'middle' });
+    }
+    text(c, 250, y + rh / 2, { size: 20, bold: true, color: C.navy, base: 'middle' });
+    rect(zx, y + 10, fb * sc, 16, C.gold);
+    text('+' + fb.toFixed(1), zx + fb * sc + 8, y + 18, { size: 15, color: C.grey, base: 'middle' });
+    const hc = ho >= 0 ? C.blue : C.rose;
+    if (ho >= 0) rect(zx, y + 30, ho * sc, 18, hc); else rect(zx + ho * sc, y + 30, -ho * sc, 18, hc);
+    text((ho > 0 ? '+' : '−') + Math.abs(ho).toFixed(2), ho >= 0 ? zx + ho * sc + 8 : zx + ho * sc - 8, y + 40, { size: 16, bold: true, color: hc, align: ho >= 0 ? 'left' : 'right', base: 'middle' });
+  });
+  // legend + notes on right
+  rect(1290, 196, 226, 210, C.pale);
+  rect(1310, 222, 30, 14, C.gold); text('反馈集对', 1350, 229, { size: 18, color: C.text, base: 'middle' });
+  rect(1310, 262, 30, 16, C.blue); text('留出 630 题', 1350, 270, { size: 18, color: C.text, base: 'middle' });
+  rect(1310, 302, 30, 16, C.rose); text('留出回退', 1350, 310, { size: 18, color: C.text, base: 'middle' });
+  wrap('留出分数从不展示给创建者', 1310, 344, 190, { size: 16, color: C.grey, lh: 1.35 });
+  rect(1290, 420, 226, 290, C.navy);
+  text('+3.11', 1403, 470, { size: 46, bold: true, color: C.white, align: 'center', base: 'middle' });
+  text('自身执行者留出增益均值', 1403, 516, { size: 16, color: C.pale, align: 'center', base: 'middle' });
+  text('2 / 9', 1403, 596, { size: 46, bold: true, color: C.gold, align: 'center', base: 'middle' });
+  text('声明版本是留出最优', 1403, 642, { size: 16, color: C.pale, align: 'center', base: 'middle' });
+  band('反馈集涨分高估真实改进：Qwen 反馈 +13.9，留出仅 +1.43', 758, 54);
+  pageNo(n);
+});
+/* line chart helper */
+function lineChart(x, y, w, h, series, o) {
+  const { ymax, ymin = 0, xmax = 10, yticks, label } = o;
+  const sx = i => x + w * i / xmax, sy = v => y + h - h * (v - ymin) / (ymax - ymin);
+  yticks.forEach(t => { line(x, sy(t), x + w, sy(t), C.line, 1.2); text(String(t), x - 8, sy(t), { size: 14, color: C.grey, align: 'right', base: 'middle' }); });
+  for (let i = 0; i <= xmax; i += 2) text('H' + i, sx(i), y + h + 8, { size: 14, color: C.grey, align: 'center' });
+  line(x, y + h, x + w, y + h, C.grey, 1.5);
+  if (label) text(label, x + w / 2, y - 30, { size: 19, bold: true, color: C.navy, align: 'center' });
+  series.forEach(s => {
+    ctx.save(); ctx.strokeStyle = s.color; ctx.lineWidth = s.lw || 3.5; if (s.dash) ctx.setLineDash(s.dash);
+    ctx.globalAlpha = s.alpha || 1;
+    ctx.beginPath(); s.v.forEach((v, i) => i ? ctx.lineTo(sx(i), sy(v)) : ctx.moveTo(sx(i), sy(v))); ctx.stroke(); ctx.restore();
+    s.v.forEach((v, i) => { if (!s.dash) circle(sx(i), sy(v), 3.5, s.color); });
+    if (s.star != null) star(sx(s.star), sy(s.v[s.star]), 11, s.color);
+  });
+}
+function star(x, y, r, color) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a)); }
+  ctx.closePath(); ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = C.white; ctx.lineWidth = 1.5; ctx.stroke();
+}
+const LIN = {
+  Gemini: '#0072B2', Opus: '#E69F00', Qwen: '#009E73', DeepSeek: '#8E44AD', 'GPT-5.5': '#D55E00'
+};
+const PAIR = {
+  self: {
+    Gemini: [[49, 51, 54, 61, 54, 54, 53, 61, 56], [70.8, 75.3, 74.2, 77.5, 71.9, 76.4, 69.7, 76.4, 71.9], 7],
+    Opus: [[68, 73, 75, 74], [74.2, 75.3, 73.0, 74.2], 3],
+    Qwen: [[41, 41, 45, 49, 53, 50, 47, 51, 49], [42.8, 38.3, 45.0, 54.0, 58.5, 54.0, 54.0, 58.5, 55.1], 4],
+    DeepSeek: [[55, 52, 61, 61, 55, 61, 61, 55, 65, 60, 60], [39.4, 48.4, 54.0, 57.4, 55.1, 56.2, 49.5, 47.3, 56.2, 51.7, 50.6], 8],
+    'GPT-5.5': [[51, 48, 56, 52, 57, 52, 56, 50], [67.4, 65.2, 74.2, 75.3, 73.0, 71.9, 73.0, 68.6], 2]
+  },
+  fixed: {
+    Gemini: [[49, 51, 54, 61, 54, 54, 53, 61, 56], [70.8, 75.3, 74.2, 77.5, 71.9, 76.4, 69.7, 76.4, 71.9], 7],
+    Opus: [[48, 54, 56, 54, 56], [69.7, 74.2, 75.3, 83.2, 74.2], 3],
+    Qwen: [[50, 36, 0, 50, 48, 50], [74.2, 52.8, 0, 76.4, 71.9, 69.7], 3],
+    DeepSeek: [[43, 33, 37, 41, 47, 51, 45, 45, 47, 45], [51.6, 49.4, 39.2, 57.3, 57.3, 55.0, 58.4, 55.0, 60.7, 57.3], 8],
+    'GPT-5.5': [[47, 53, 53, 46, 46, 45, 50, 53, 46, 51, 56], [66.3, 65.2, 62.9, 64.0, 61.8, 65.2, 64.0, 61.8, 58.4, 62.9, 61.8], 1]
+  }
+};
+const HELD = {
+  self: { Gemini: [49.0, 46.6, 48.8, 49.3, 50.4, 49.8, 51.2, 51.7, 51.7], Opus: [63.1, 66.3, 69.1, 67.6], Qwen: [42.3, 46.1, 46.3, 24.1, 43.7, 46.9, 45.7, 44.5, 44.2],
+          DeepSeek: [47.4, 48.4, 52.3, 51.7, 49.8, 51.7, 48.8, 49.5, 50.6, 49.0, 49.9], 'GPT-5.5': [48.4, 49.6, 52.2, 50.1, 51.1, 50.6, 50.3, 50.4] },
+  fixed: { Gemini: [49.0, 46.6, 48.8, 49.3, 50.4, 49.8, 51.2, 51.7, 51.7], Opus: [48.2, 53.4, 53.0, 50.9, 51.1], Qwen: [49.6, 26.0, 0.1, 48.5, 46.0, 44.9],
+           DeepSeek: [43.1, 19.3, 33.3, 41.7, 43.7, 41.4, 42.6, 43.0, 40.7, 43.3], 'GPT-5.5': [42.3, 32.0, 44.9, 41.4, 38.8, 44.7, 43.9, 46.0, 43.4, 48.5, 33.4] }
+};
+
+/* 12. Trajectories (Fig.7) */
+slides.push((n) => {
+  title('迭代轨迹不平稳：版本间来回震荡，声明版本常非最优');
+  const cells = [['self', 0, 'SWE-Pro-100 · 自身执行者', 80, [0, 20, 40, 60, 80]], ['self', 1, 'Terminal-89 · 自身执行者', 90, [0, 30, 60, 90]],
+                 ['fixed', 0, 'SWE-Pro-100 · 固定 Gemini', 80, [0, 20, 40, 60, 80]], ['fixed', 1, 'Terminal-89 · 固定 Gemini', 90, [0, 30, 60, 90]]];
+  cells.forEach(([k, b, lab, ymax, yt], i) => {
+    const x = 140 + (i % 2) * 700, y = 200 + Math.floor(i / 2) * 290;
+    lineChart(x, y, 600, 210, Object.entries(PAIR[k]).map(([c, d]) => ({ v: d[b], color: LIN[c], star: d[2] })), { ymax, yticks: yt, label: lab });
+  });
+  Object.keys(LIN).forEach((c, i) => {
+    line(140 + i * 200, 790, 176 + i * 200, 790, LIN[c], 5); text(c, 186 + i * 200, 790, { size: 18, color: C.text, base: 'middle' });
+  });
+  star(1160, 790, 11, C.navy); text('创建者声明的最终版本', 1180, 790, { size: 18, color: C.text, base: 'middle' });
+  pageNo(n);
+});
+/* 13. Feedback vs held-out (Fig.8) */
+slides.push((n) => {
+  title('反馈集与留出集只在 53.1% 的版本切换中同向变化');
+  const names = Object.keys(LIN);
+  ['self', 'fixed'].forEach((k, r) => {
+    const y = 214 + r * 270;
+    rect(84, y - 34, 40, 228, r ? C.blue : C.navy);
+    ctx.save(); ctx.translate(104, y + 80); ctx.rotate(-Math.PI / 2);
+    text(r ? '固定 Gemini' : '自身执行者', 0, 0, { size: 18, bold: true, color: C.white, align: 'center', base: 'middle' }); ctx.restore();
+    names.forEach((c, j) => {
+      const x = 186 + j * 270;
+      lineChart(x, y, 214, 170, [
+        { v: PAIR[k][c][0], color: LIN[c], dash: [7, 5], alpha: 0.55, lw: 3, star: PAIR[k][c][2] },
+        { v: HELD[k][c], color: LIN[c], lw: 3.5 }
+      ], { ymax: 80, yticks: [0, 40, 80], label: r === 0 ? c : null });
+    });
+  });
+  line(186, 776, 226, 776, C.navy, 3, [7, 5]); text('SWE-Pro-100 反馈集（可见）', 236, 776, { size: 17, color: C.text, base: 'middle' });
+  line(560, 776, 600, 776, C.navy, 3.5); text('SWE-Pro 留出 630 题（不可见）', 610, 776, { size: 17, color: C.text, base: 'middle' });
+  star(960, 776, 10, C.navy); text('声明版本', 978, 776, { size: 17, color: C.text, base: 'middle' });
+  text('同一提交重复运行波动约 ±4.75 分', 1516, 776, { size: 17, bold: true, color: C.rose, align: 'right', base: 'middle' });
+  caption('Gemini 列为同一条控制轨迹（固定执行者即 Gemini 本身）', 808);
+  pageNo(n);
+});
+
+/* 14. Edit anatomy & stability */
+slides.push((n) => {
+  title('64 次版本切换：改的多是控制流，真正超出噪声的改进只有 2 次');
+  panel(84, 150, 560, 560, '每次切换修改了哪些模块');
+  const mods = [['执行 / 控制流', 58, C.navy], ['工具', 37, C.blue], ['生命周期', 17, '#B39552'], ['上下文', 16, '#4F9AD6'], ['状态', 4, C.rose], ['独立验证器', 0, C.rose]];
+  mods.forEach(([l, v, c], i) => {
+    const y = 236 + i * 70;
+    text(l, 250, y + 20, { size: 21, color: C.text, align: 'right', base: 'middle' });
+    rect(266, y, 300, 40, C.pale);
+    rect(266, y, 300 * v / 64, 40, c);
+    text(String(v), 266 + 300 * v / 64 + 10, y + 20, { size: 21, bold: true, color: v < 5 ? C.rose : C.navy, base: 'middle' });
+  });
+  wrap('中位声明版本改动 8 个文件，+476 / −38 行', 108, 660, 520, { size: 19, color: C.grey });
+  panel(676, 150, 840, 560, '切换结果分布（n = 64）');
+  const out = [['噪声带内的增益', 27, C.neutral], ['单一基准回退', 16, C.rose], ['两个基准都回退', 8, '#A85C54'], ['无可测变化', 7, C.line], ['跨基准此消彼长', 3, C.gold], ['超出噪声的明确改进', 2, C.blue], ['无可执行代码变化', 1, '#DDE3EA']];
+  // stacked horizontal bar
+  let xx = 712; const bw = 768;
+  out.forEach(([l, v, c]) => { rect(xx, 236, bw * v / 64, 64, c); if (v >= 7) text(String(v), xx + bw * v / 128, 268, { size: 22, bold: true, color: C.white, align: 'center', base: 'middle' }); xx += bw * v / 64; });
+  out.forEach(([l, v, c], i) => {
+    const x = 712 + (i % 2) * 390, y = 336 + Math.floor(i / 2) * 56;
+    rect(x, y, 26, 26, c);
+    text(`${l}  ${v}`, x + 40, y + 13, { size: 20, color: i === 5 ? C.blue : C.text, bold: i === 5, base: 'middle' });
+  });
+  rect(712, 572, 768, 112, C.pale);
+  wrap('169 个新增函数/类：113 个从入口可达，31 个只经死代码可达，25 个无调用者', 736, 590, 720, { size: 19, color: C.text, lh: 1.4 });
+  wrap('专用轨迹接口只被调用 2 次；一个 GPT-5.5 候选通过全部 5 题探测，全量仅得 0.584', 736, 636, 720, { size: 19, color: C.text, lh: 1.4 });
+  band('没有任何一次切换修改独立验证器，状态模块仅被触及 4 次', 736, 64);
+  pageNo(n);
+});
+/* 15. Case studies */
+slides.push((n) => {
+  title('案例：Opus 抓住“虚报成功”，GPT-5.5 过早收手');
+  // Opus
+  panel(84, 150, 700, 560, 'Opus 4.8 · 自身执行者 · 诊断驱动');
+  rect(108, 228, 652, 96, C.paleRose);
+  rich([['99 / 100', { bold: true, color: C.rose }], [' 次运行自报成功，实际只通过 ', {}], ['48', { bold: true, color: C.rose }]], 128, 248, 23);
+  text('→ 定位为“过早完成”，加入完成前验证门', 128, 286, { size: 20, color: C.text });
+  const op = [['H0', 68, 74.2, '起点'], ['T1', 73, 75.3, '诊断优先的完成前验证 + 必定收尾'], ['T2', 75, 73.0, '基于 diff 的自我审查'], ['T3 ★', 74, 74.2, '非 git 产物自审，声明为最终版']];
+  op.forEach(([v, s, t, d], i) => {
+    const y = 350 + i * 72;
+    chip(v, 108, y, 84, 52, { fill: i === 3 ? C.navy : C.pale, color: i === 3 ? C.white : C.navy, size: 21 });
+    text(`SWE ${s} · Term ${t}`, 210, y + 4, { size: 20, bold: true, color: C.navy });
+    text(d, 210, y + 32, { size: 17, color: C.grey });
+  });
+  text('仅用 3/10 个评测对；自估噪声约 ±3–4 题；留出 +4.44（最高）', 108, 652, { size: 18, bold: true, color: C.blue });
+  // GPT
+  panel(816, 150, 700, 560, 'GPT-5.5 · 自身执行者 · 早停', C.blue);
+  rect(840, 228, 652, 96, C.pale);
+  rich([['T2', { bold: true, color: C.blue }], [' 最终审查门（+70/−1 行）：评测对 ', {}], ['+5.87 pp', { bold: true, color: C.blue }]], 860, 248, 23);
+  text('之后 T3–T7 来回震荡，最终回退声明 T2', 860, 286, { size: 20, color: C.text });
+  const gs = [51, 48, 56, 52, 57, 52, 56, 50], gt = [67.4, 65.2, 74.2, 75.3, 73.0, 71.9, 73.0, 68.6];
+  lineChart(900, 386, 560, 200, [{ v: gs, color: LIN['GPT-5.5'], star: 2 }, { v: gt, color: C.navy, star: 2 }], { ymin: 40, ymax: 80, xmax: 7, yticks: [40, 50, 60, 70, 80], label: null });
+  line(900, 626, 936, 626, LIN['GPT-5.5'], 4); text('SWE-Pro-100', 944, 626, { size: 16, color: C.text, base: 'middle' });
+  line(1110, 626, 1146, 626, C.navy, 4); text('Terminal-89', 1154, 626, { size: 16, color: C.text, base: 'middle' });
+  star(1300, 626, 10, C.grey); text('声明 T2', 1316, 626, { size: 16, color: C.text, base: 'middle' });
+  text('剩 3 个评测对未用；自身 54% 的工具调用拒绝率从未修复', 840, 652, { size: 18, bold: true, color: C.rose });
+  band('能否读懂失败轨迹、区分噪声与真实改进，决定了演化是否有效', 736, 64);
+  pageNo(n);
+});
+
+/* 16. Conclusion */
+slides.push((n) => {
+  title('启示：外壳是模型之外的另一处“智能积累”，但自我演化尚不可靠');
+  line(820, 160, 820, 700, C.line, 2);
+  const tk = [
+    ['01', '创建能力因领域而异', '写作与 ML 实验可达甚至超过人类参考；代码落后，检索差距最大。'],
+    ['02', '外壳与作者模型强耦合', '换执行者后分数大幅波动，可迁移质量与协同适配交织。'],
+    ['03', '演化增益不稳定', '反馈集涨分难以迁移，可见反馈不足以挑选最终版本。'],
+    ['04', '状态与验证是共同短板', '检查点几乎为零，验证器从未被单独改进。']
+  ];
+  tk.forEach(([no, h, d], i) => {
+    const y = 160 + i * 136;
+    text(no, 84, y, { size: 44, bold: true, color: C.blue });
+    rect(170, y + 6, 6, 104, C.blue);
+    text(h, 196, y + 4, { size: 26, bold: true, color: C.navy });
+    wrap(d, 196, y + 46, 590, { size: 20, color: C.text, lh: 1.4 });
+  });
+  text('结果的适用边界', 860, 160, { size: 26, bold: true, color: C.navy });
+  let y = 214;
+  ['四个领域无法覆盖全部部署场景；人类基线并不均衡、未必最优',
+   'Unified-Eval 不能完全消除执行者影响；行为比较为描述性',
+   '演化每格仅一条轨迹，无法给出不确定性；留出评测只覆盖 SWE-Pro',
+   '生成的外壳应视为不可信代码'].forEach(s => { y = bullet(s, 860, y, 650, { size: 20, dot: C.gold }) + 12; });
+  rect(860, y + 10, 656, 100, C.pale);
+  wrap('讨论：如何给外壳演化提供可信的反馈与版本选择信号，并让状态与验证真正被用起来？', 884, y + 26, 610, { size: 20, bold: true, color: C.blue, lh: 1.4 });
+  text('“If model weights are one place intelligence accumulates, the harness is another.”', W / 2, 760, { size: 25, bold: true, color: C.navy, align: 'center' });
+  pageNo(n);
+});
+
+/* ---------- runtime ---------- */
+let cur = 0;
+// ?export renders the bare slide edge-to-edge (used for screenshot-based PPTX export).
+const EXPORT = new URLSearchParams(location.search).has('export');
+if (EXPORT) { document.getElementById('hint').remove(); canvas.style.boxShadow = 'none'; }
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H) * (document.fullscreenElement || EXPORT ? 1 : 0.96);
+  canvas.style.width = W * s + 'px'; canvas.style.height = H * s + 'px';
+  canvas.width = Math.round(W * s * dpr); canvas.height = Math.round(H * s * dpr);
+  ctx.setTransform(s * dpr, 0, 0, s * dpr, 0, 0);
+  render();
+}
+function render() {
+  ctx.save(); ctx.fillStyle = C.white; ctx.fillRect(0, 0, W, H); ctx.restore();
+  slides[cur](cur + 1);
+  canvas.setAttribute('aria-label', `幻灯片 ${cur + 1} / ${slides.length}`);
+  try { history.replaceState(null, '', '#' + (cur + 1)); } catch (_) { /* file:// in some browsers */ }
+}
+function go(i) { cur = Math.max(0, Math.min(slides.length - 1, i)); render(); }
+function exportPNG() {
+  const off = document.createElement('canvas'); off.width = W * 2; off.height = H * 2;
+  const main = ctx;
+  ctx = off.getContext('2d'); ctx.setTransform(2, 0, 0, 2, 0, 0);
+  try { ctx.fillStyle = C.white; ctx.fillRect(0, 0, W, H); slides[cur](cur + 1); }
+  finally { ctx = main; }
+  const a = document.createElement('a'); a.download = `harnessdev-${String(cur + 1).padStart(2, '0')}.png`; a.href = off.toDataURL('image/png'); a.click();
+}
+document.addEventListener('keydown', e => {
+  if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); go(cur + 1); }
+  else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); go(cur - 1); }
+  else if (e.key === 'Home') go(0);
+  else if (e.key === 'End') go(slides.length - 1);
+  else if (e.key === 'f' || e.key === 'F') { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+  else if (e.key === 's' || e.key === 'S') exportPNG();
+});
+canvas.addEventListener('click', e => { const r = canvas.getBoundingClientRect(); go(cur + (e.clientX - r.left < r.width / 3 ? -1 : 1)); });
+window.addEventListener('resize', fit);
+document.addEventListener('fullscreenchange', fit);
+cur = Math.max(0, Math.min(slides.length - 1, (parseInt(location.hash.slice(1), 10) || 1) - 1));
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(fit);
+</script>
+</body>
+</html>

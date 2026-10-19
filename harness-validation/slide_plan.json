@@ -1,0 +1,22 @@
+{
+  "paper": "synthetic integration fixture; no research claims",
+  "reference": "C:/Users/16947/Downloads/claude_trail_2/harnessdev-deck-native.pptx",
+  "slides": [
+    {
+      "title": "Component library page",
+      "purpose": "Verify editable groups and SVG embedding",
+      "source": "synthetic fixture",
+      "reference_slide": "slide3-native component sheet",
+      "adaptation": "Test a custom teal icon and plum title independently of the old blue palette",
+      "visual": {"icons": ["teal icon"], "native_shapes": ["group"], "reason": "演示 SVG 与分组"}
+    },
+    {
+      "title": "Table and chart",
+      "purpose": "Verify native table and chart",
+      "source": "synthetic values A=10, B=15, C=12",
+      "reference_slide": "HarnessDev native chart and table treatment",
+      "adaptation": "Use a wide chart and separate table to inspect editability, font size and PowerPoint rendering",
+      "visual": {"icons": [], "native_shapes": ["table", "chart"], "reason": "纯原生元素"}
+    }
+  ]
+}

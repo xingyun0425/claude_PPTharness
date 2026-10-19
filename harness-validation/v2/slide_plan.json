@@ -1,0 +1,23 @@
+{
+ "paper": "synthetic integration fixture",
+ "reference": "C:/Users/16947/Downloads/page_study/合稿-20260707电力人工智能自主科研引擎方案汇报.pptx",
+ "slides": [
+  {
+   "purpose": "Verify base master, SVG artwork and native labels",
+   "source": "synthetic",
+   "reference_slide": "ref-05 (three-column body, teal header)",
+   "adaptation": "teal roles from reference; loop illustration replaces its picture panels",
+   "visual": "SVG: one cycle illustration with lock, config icon; native text labels and arrow shapes"
+  },
+  {
+   "purpose": "Verify native table and chart",
+   "source": "synthetic",
+   "reference_slide": "ref-04",
+   "adaptation": "chart sits in the content area below the master header",
+   "visual": "Native table (3 rows); SVG icon on left; native text throughout"
+  },
+  {
+   "component_library": true
+  }
+ ]
+}

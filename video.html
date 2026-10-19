@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI 是怎么做视频的 · 第 1 段（0-20s）</title>
+<style>
+  html,body{margin:0;height:100%;background:#1f1f1f;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#eee}
+  #wrap{width:min(96vw,calc((100vh - 80px)*16/9));aspect-ratio:16/9}
+  canvas{width:100%;height:100%;display:block;border-radius:10px;box-shadow:0 10px 40px #000a}
+  #bar{display:flex;gap:12px;align-items:center;width:min(96vw,calc((100vh - 80px)*16/9));margin-top:14px}
+  button{background:#D97757;border:0;color:#fff;font-size:16px;padding:7px 16px;border-radius:6px;cursor:pointer}
+  button:focus-visible,input:focus-visible{outline:3px solid #F6C945;outline-offset:2px}
+  input[type=range]{flex:1;accent-color:#D97757}
+  #time{font-variant-numeric:tabular-nums;min-width:110px;text-align:right}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1920" height="1080" role="img" aria-label="手绘风教学动画：AI 是怎么做出视频的（片头 20 秒）"></canvas></div>
+<div id="bar">
+  <button id="play" aria-label="播放/暂停">⏸ 暂停</button>
+  <button id="restart" aria-label="重播">↺ 重播</button>
+  <input id="seek" type="range" min="0" max="20" step="0.01" value="0" aria-label="播放进度">
+  <span id="time">0.0 / 20.0s</span>
+</div>
+<script>
+// ================= 基础工具 =================
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = 1920, H = 1080, DUR = 20;
+const FONT = '"KaiTi","STKaiti","楷体","Microsoft YaHei",serif';
+const HAND = '"Microsoft YaHei","PingFang SC",sans-serif';
+const MONO = 'Consolas,"Courier New",monospace';
+const C = { paper:'#FBF6EC', ink:'#2B2B2B', orange:'#D97757', orangeD:'#B85C3F', blue:'#5B8DEF',
+            green:'#6BBF59', yellow:'#F6C945', pink:'#F28DB2', purple:'#9B7BEA' };
+
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const lerpP = (p, q, t) => [lerp(p[0], q[0], t), lerp(p[1], q[1], t)];
+const prog = (t, s, e) => clamp((t - s) / (e - s));
+const E = {
+  out: t => 1 - Math.pow(1 - t, 3),
+  inOut: t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+  back: t => { const c = 1.9, c3 = c + 1; return 1 + c3 * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+};
+function rng(seed) {
+  let a = (seed * 2654435761) >>> 0 || 1;
+  return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+let BOIL = 0;   // 线条"抖动"帧号：每秒变 8 次，模拟手绘动画的线条颤动
+let T = 0;      // 当前时间（全局）
+
+// ================= 手绘笔触 =================
+// 把一条路径拆成点，加微小抖动，画两遍 → 像铅笔/马克笔画的
+function jitterPts(pts, amp, seed) {
+  const r = rng(seed + BOIL * 101);
+  return pts.map(p => [p[0] + (r() - .5) * amp, p[1] + (r() - .5) * amp]);
+}
+function strokePts(pts, { color = C.ink, width = 5, amp = 3, seed = 1, passes = 2, progress = 1, close = false } = {}) {
+  if (close) pts = pts.concat([pts[0]]);
+  const n = Math.max(2, Math.floor(pts.length * clamp(progress)));
+  if (progress <= 0) return;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const a0 = ctx.globalAlpha;
+  for (let k = 0; k < passes; k++) {
+    const q = jitterPts(pts.slice(0, n), amp, seed + k * 17);
+    ctx.lineWidth = width * (k ? .55 : 1); ctx.globalAlpha = a0 * (k ? .6 : 1);
+    ctx.beginPath(); ctx.moveTo(q[0][0], q[0][1]);
+    for (let i = 1; i < q.length - 1; i++) {
+      const mx = (q[i][0] + q[i + 1][0]) / 2, my = (q[i][1] + q[i + 1][1]) / 2;
+      ctx.quadraticCurveTo(q[i][0], q[i][1], mx, my);
+    }
+    ctx.lineTo(q[q.length - 1][0], q[q.length - 1][1]); ctx.stroke();
+  }
+  ctx.restore();
+  return pts[n - 1];
+}
+function linePts(x1, y1, x2, y2, seg = 12) {
+  const a = []; for (let i = 0; i <= seg; i++) a.push([lerp(x1, x2, i / seg), lerp(y1, y2, i / seg)]); return a;
+}
+function ellPts(cx, cy, rx, ry, seg = 40, start = -Math.PI / 2, over = 0.08) {
+  const a = []; for (let i = 0; i <= seg; i++) { const t = start + (Math.PI * 2 + over) * i / seg; a.push([cx + Math.cos(t) * rx, cy + Math.sin(t) * ry]); } return a;
+}
+function rectPts(x, y, w, h) {
+  return [...linePts(x, y, x + w, y, 10), ...linePts(x + w, y, x + w, y + h, 6).slice(1),
+          ...linePts(x + w, y + h, x, y + h, 10).slice(1), ...linePts(x, y + h, x, y + 4, 6).slice(1)];
+}
+// 手绘风填充：先填一层平涂（略微错位），再描边
+function fillPts(pts, color, seed = 3, amp = 3) {
+  const q = jitterPts(pts, amp, seed);
+  ctx.save(); ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(q[0][0], q[0][1]);
+  q.forEach(p => ctx.lineTo(p[0], p[1])); ctx.closePath(); ctx.fill(); ctx.restore();
+}
+function shape(pts, fill, opt = {}) { if (fill) fillPts(pts, fill, opt.seed); strokePts(pts, opt); }
+// 斜线阴影（手绘排线）
+function hatch(x, y, w, h, color, gap = 16, seed = 9) {
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  for (let i = -h; i < w; i += gap) strokePts(linePts(x + i, y + h, x + i + h, y, 4), { color, width: 2.5, amp: 2, seed: seed + i, passes: 1 });
+  ctx.restore();
+}
+// 文字：每个字带轻微旋转/上下抖动，逐字弹出
+function text(str, x, y, { size = 80, color = C.ink, font = FONT, align = 'center', progress = 1, weight = 'bold', wobble = 1, seed = 5, stroke = null } = {}) {
+  ctx.save(); ctx.font = `${weight} ${size}px ${font}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const chars = [...str], ws = chars.map(ch => ctx.measureText(ch).width), total = ws.reduce((a, b) => a + b, 0);
+  let cx = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
+  const shown = chars.length * clamp(progress), r = rng(seed + BOIL * 7);
+  chars.forEach((ch, i) => {
+    const k = clamp(shown - i); if (k <= 0) { cx += ws[i]; return; }
+    const s = E.back(k), rot = (r() - .5) * .08 * wobble, dy = (r() - .5) * 4 * wobble;
+    ctx.save(); ctx.translate(cx + ws[i] / 2, y + dy + (1 - k) * 20); ctx.rotate(rot); ctx.scale(s, s); ctx.globalAlpha = clamp(k * 2);
+    if (stroke) { ctx.lineWidth = size * .14; ctx.strokeStyle = stroke; ctx.lineJoin = 'round'; ctx.strokeText(ch, -ws[i] / 2, 0); }
+    ctx.fillStyle = color; ctx.fillText(ch, -ws[i] / 2, 0); ctx.restore();
+    cx += ws[i];
+  });
+  ctx.restore();
+  return total;
+}
+// 马克笔高亮（在文字下面刷一道）
+function marker(x, y, w, h, color, progress) {
+  if (progress <= 0) return;
+  ctx.save(); ctx.globalAlpha = .55;
+  fillPts(rectPts(x, y, w * E.out(progress), h), color, 31, 5); ctx.restore();
+}
+
+// ================= 背景：纸张 =================
+const paperTex = (() => {
+  const o = document.createElement('canvas'); o.width = W; o.height = H; const g = o.getContext('2d');
+  g.fillStyle = C.paper; g.fillRect(0, 0, W, H);
+  const r = rng(42);
+  for (let i = 0; i < 26000; i++) { g.fillStyle = `rgba(120,90,50,${r() * .05})`; g.fillRect(r() * W, r() * H, 2, 2); }
+  g.strokeStyle = 'rgba(91,141,239,.10)'; g.lineWidth = 2;
+  for (let y = 90; y < H; y += 60) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  const vg = g.createRadialGradient(W / 2, H / 2, H * .4, W / 2, H / 2, H * 1.1);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(80,50,20,.18)');
+  g.fillStyle = vg; g.fillRect(0, 0, W, H);
+  return o;
+})();
+function drawPaper() { ctx.drawImage(paperTex, 0, 0); }
+// 四周漂浮的小涂鸦（星星、螺旋、小点）
+function doodles(t, alpha = 1) {
+  const items = [[160, 170, 'star', C.yellow], [1760, 150, 'spiral', C.blue], [1800, 760, 'star', C.pink],
+                 [120, 820, 'spiral', C.green], [980, 110, 'dot', C.orange], [1500, 960, 'dot', C.purple]];
+  ctx.save(); ctx.globalAlpha = alpha;
+  items.forEach(([x, y, k, col], i) => {
+    const yy = y + Math.sin(t * 1.5 + i) * 10, s = 1 + Math.sin(t * 2 + i * 2) * .08;
+    ctx.save(); ctx.translate(x, yy); ctx.scale(s, s); ctx.rotate(Math.sin(t + i) * .2);
+    if (k === 'star') { const p = []; for (let j = 0; j <= 10; j++) { const a = -Math.PI / 2 + j * Math.PI / 5, rr = j % 2 ? 16 : 38; p.push([Math.cos(a) * rr, Math.sin(a) * rr]); } shape(p, col, { width: 4, seed: i }); }
+    else if (k === 'spiral') { const p = []; for (let j = 0; j < 40; j++) { const a = j * .45, rr = j * 1.1; p.push([Math.cos(a) * rr, Math.sin(a) * rr]); } strokePts(p, { color: col, width: 4, seed: i }); }
+    else shape(ellPts(0, 0, 14, 14, 16), col, { width: 3, seed: i });
+    ctx.restore();
+  });
+  ctx.restore();
+}
+
+// ================= 角色：小橙（AI 吉祥物） =================
+// opt: s 缩放, look 眼睛方向, mouth 'smile'|'o'|'grin', arm 'wave'|'point'|'none', pointAng
+function mascot(x, y, s, t, opt = {}) {
+  const { look = [0, 0], mouth = 'smile', arm = 'none', pointAng = 0, squash = 0 } = opt;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s * (1 + squash), s * (1 - squash));
+  const breathe = Math.sin(t * 3) * 4;
+  // 影子
+  ctx.save(); ctx.globalAlpha = .18; fillPts(ellPts(0, 150, 120, 18, 24), '#000', 2, 2); ctx.restore();
+  // 腿
+  strokePts(linePts(-40, 100, -45, 148, 4), { width: 9, seed: 11 });
+  strokePts(linePts(40, 100, 45, 148, 4), { width: 9, seed: 12 });
+  // 手臂
+  const armL = arm === 'wave' ? [[-110, 0], [-150, -50 + Math.sin(t * 12) * 18], [-165, -100 + Math.sin(t * 12) * 30]] : [[-110, 10], [-140, 50], [-150, 80]];
+  strokePts(armL, { width: 9, seed: 13 });
+  if (arm === 'point') {
+    const L = 120, ex = 110 + Math.cos(pointAng) * L, ey = 10 + Math.sin(pointAng) * L;
+    strokePts([[105, 10], [lerp(105, ex, .5), lerp(10, ey, .5) + 6], [ex, ey]], { width: 9, seed: 14 });
+    shape(ellPts(ex, ey, 13, 13, 12), C.orange, { width: 5, seed: 15 });
+  } else strokePts([[110, 10], [140, 50], [150, 80]], { width: 9, seed: 14 });
+  // 身体（圆滚滚的橙色团子）
+  const body = ellPts(0, breathe * .3, 120, 110 + breathe, 36);
+  shape(body, C.orange, { width: 7, seed: 21 });
+  ctx.save(); ctx.globalAlpha = .25; fillPts(ellPts(-40, -45, 35, 22, 16), '#fff', 4, 2); ctx.restore();
+  // 头顶的小火花（像 Claude 的星芒）
+  ctx.save(); ctx.translate(0, -125 + breathe * .2); ctx.rotate(t * .8);
+  for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; strokePts(linePts(Math.cos(a) * 6, Math.sin(a) * 6, Math.cos(a) * 24, Math.sin(a) * 24, 3), { color: C.orangeD, width: 7, seed: 30 + i }); }
+  ctx.restore();
+  // 脸
+  const blink = (t % 3.3) < .12 ? .12 : 1;
+  [-38, 38].forEach((ex, i) => {
+    ctx.save(); ctx.translate(ex + look[0] * 8, -15 + look[1] * 6); ctx.scale(1, blink);
+    fillPts(ellPts(0, 0, 13, 17, 14), C.ink, 40 + i, 1.5);
+    ctx.globalAlpha = .9; fillPts(ellPts(-4, -6, 4.5, 5, 8), '#fff', 44 + i, .8); ctx.restore();
+  });
+  ctx.save(); ctx.globalAlpha = .45; fillPts(ellPts(-72, 22, 18, 10, 12), C.pink, 50, 1); fillPts(ellPts(72, 22, 18, 10, 12), C.pink, 51, 1); ctx.restore();
+  if (mouth === 'o') shape(ellPts(0, 35, 14, 18, 14), '#7a2e1a', { width: 5, seed: 52 });
+  else if (mouth === 'grin') { const p = []; for (let i = 0; i <= 10; i++) { const a = Math.PI * i / 10; p.push([Math.cos(a) * 34, 22 + Math.sin(a) * 26]); } p.push([34, 22]); shape(p, '#7a2e1a', { width: 5, seed: 53 }); }
+  else { const p = []; for (let i = 0; i <= 10; i++) { const a = Math.PI * (.15 + .7 * i / 10); p.push([Math.cos(a) * 30, 15 + Math.sin(a) * 22]); } strokePts(p, { width: 6, seed: 54 }); }
+  ctx.restore();
+}
+
+// ================= 角色：火柴人画家 =================
+function painter(x, y, s, t) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  // 画架
+  strokePts(linePts(120, -120, 70, 160, 6), { width: 7, color: '#8a5a33', seed: 61 });
+  strokePts(linePts(250, -120, 300, 160, 6), { width: 7, color: '#8a5a33', seed: 62 });
+  shape(rectPts(80, -170, 200, 150), '#fff', { width: 6, seed: 63 });
+  const sp = []; for (let i = 0; i < 20; i++) sp.push([110 + i * 8, -95 + Math.sin(i * .9 + t * 2) * 25]);
+  strokePts(sp, { color: C.blue, width: 6, seed: 64, progress: (t * .6) % 1 + .2 });
+  // 人
+  shape(ellPts(-60, -120, 38, 40, 22), '#fff', { width: 6, seed: 65 });
+  strokePts([[-72, -122], [-70, -118]], { width: 8, seed: 66 }); strokePts([[-48, -122], [-46, -118]], { width: 8, seed: 67 });
+  strokePts(linePts(-60, -80, -60, 50, 6), { width: 7, seed: 68 });
+  strokePts([[-60, 50], [-90, 150]], { width: 7, seed: 69 }); strokePts([[-60, 50], [-30, 150]], { width: 7, seed: 70 });
+  strokePts([[-60, -40], [-100, 10]], { width: 7, seed: 71 });
+  const hx = 40 + Math.sin(t * 6) * 20, hy = -80 + Math.cos(t * 6) * 15;
+  strokePts([[-60, -40], [-10, -40], [hx, hy]], { width: 7, seed: 72 });
+  strokePts(linePts(hx, hy, hx + 40, hy - 50, 4), { width: 10, color: C.yellow, seed: 73 });
+  ctx.restore();
+}
+
+// ================= 字幕条（之后配音可以直接按这里的文案录） =================
+const CAPS = [
+  [0.3, 3.4, '嘿！先问你一个问题——'],
+  [3.6, 7.4, '你现在看的这个视频……'],
+  [7.6, 11.0, '你猜，是谁一笔一笔画出来的？'],
+  [11.2, 15.4, '答案是：没有人画！它是 AI 用代码"写"出来的。'],
+  [15.6, 20.0, '接下来 3 分钟，我带你看懂 AI 是怎么做到的。'],
+];
+function captions(t) {
+  const c = CAPS.find(c => t >= c[0] && t < c[1]); if (!c) return;
+  const a = clamp(Math.min((t - c[0]) / .25, (c[1] - t) / .25));
+  ctx.save(); ctx.globalAlpha = a; ctx.font = `bold 46px ${HAND}`;
+  const w = ctx.measureText(c[2]).width + 80;
+  ctx.globalAlpha = a * .82; fillPts(rectPts(W / 2 - w / 2, H - 120, w, 76), '#2B2B2B', 77, 3);
+  ctx.globalAlpha = a; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(c[2], W / 2, H - 82); ctx.restore();
+}
+
+// 本视频自己的真实源码（第 4 幕的"惊喜"直接把它展示出来）
+const SRC = document.scripts[0].textContent.split('\n').map(s => s.replace(/\t/g, '  ')).filter(s => s.trim());
+
+// ---------- 第 1 幕 0~3.5s：小橙登场打招呼 ----------
+function scene1(t) {
+  drawPaper(); doodles(T, clamp(t / .8));
+  const drop = E.back(prog(t, .1, .9));
+  const land = prog(t, .75, 1.05), squash = land > 0 && land < 1 ? Math.sin(land * Math.PI) * .18 : 0;
+  mascot(W / 2, lerp(-300, 560, drop), 1.6, T, { arm: t > 1 ? 'wave' : 'none', mouth: t > 1 ? 'grin' : 'o', squash });
+  if (t > 1.1) {
+    const k = E.back(prog(t, 1.1, 1.5));
+    ctx.save(); ctx.translate(W / 2 + 330, 250); ctx.scale(k, k); ctx.rotate(-.08);
+    shape(ellPts(0, 0, 150, 85, 30), '#fff', { width: 6, seed: 81 });
+    strokePts([[-60, 70], [-120, 140], [-20, 78]], { width: 6, seed: 82 });
+    text('嘿！', 0, 0, { size: 96, color: C.orange, progress: prog(t, 1.2, 1.5) * 1.01 });
+    ctx.restore();
+  }
+  // 大问号从旁边跳出来
+  if (t > 2.2) {
+    const k = E.back(prog(t, 2.2, 2.7));
+    ctx.save(); ctx.translate(W / 2 - 430, 330 + Math.sin(T * 5) * 12); ctx.scale(k, k); ctx.rotate(Math.sin(T * 3) * .15);
+    text('?', 0, 0, { size: 260, color: C.blue, stroke: C.ink, font: HAND });
+    ctx.restore();
+  }
+}
+
+// ---------- 第 2 幕 3.5~7.5s："你现在看的这个视频"——画面里套画面 ----------
+let snap = null;   // 无限套娃用的上一帧快照
+function scene2(t) {
+  drawPaper(); doodles(T, .6);
+  const z = E.inOut(prog(t, .2, 1.4));
+  // 一台手绘电脑，屏幕里播放的就是"这个视频"本身
+  const mx = W / 2, my = lerp(540, 470, z), sc = lerp(2.2, 1, z);
+  ctx.save(); ctx.translate(mx, my); ctx.scale(sc, sc);
+  shape(rectPts(-430, -270, 860, 520), '#3a3a3a', { width: 7, seed: 91 });
+  ctx.save(); ctx.beginPath(); ctx.rect(-400, -240, 800, 450); ctx.clip();
+  if (snap) ctx.drawImage(snap, -400, -240, 800, 450);
+  ctx.restore();
+  strokePts(rectPts(-400, -240, 800, 450), { width: 4, seed: 92, color: '#111' });
+  shape([[-80, 250], [80, 250], [120, 330], [-120, 330]], '#9a9a9a', { width: 6, seed: 93, close: true });
+  shape(rectPts(-220, 325, 440, 30), '#bdbdbd', { width: 6, seed: 94 });
+  ctx.restore();
+  // 箭头 + "就是这个！"
+  if (t > 1.5) {
+    const p = prog(t, 1.5, 2.1);
+    const arr = [[1620, 260], [1520, 250], [1430, 300]];
+    strokePts(arr, { color: C.orange, width: 10, seed: 95, progress: E.out(p) });
+    if (p >= 1) { strokePts([[1460, 260], [1430, 300], [1480, 315]], { color: C.orange, width: 10, seed: 96 }); }
+    text('就是你正在看的这个！', 1640, 190, { size: 54, color: C.orangeD, progress: prog(t, 1.9, 2.8), align: 'right' });
+  }
+  // 小橙在角落托腮
+  mascot(300, 800, .9, T, { look: [1, -1], mouth: 'smile', arm: 'point', pointAng: -0.6 });
+}
+
+// ---------- 第 3 幕 7.5~11s：你猜是谁画的？ ----------
+const GUESS = [['画师熬夜画？', C.blue], ['动画公司做？', C.green], ['剪辑软件拼？', C.purple]];
+function scene3(t) {
+  drawPaper(); doodles(T, .6);
+  text('你猜，是谁一笔一笔画出来的？', W / 2, 140, { size: 84, progress: prog(t, 0, .9) });
+  marker(W / 2 - 560, 168, 1120, 22, C.yellow, prog(t, .7, 1.2));
+  painter(560, 560, 1.15, T);
+  GUESS.forEach(([s, col], i) => {
+    const t0 = 1 + i * .55, k = E.back(prog(t, t0, t0 + .4)); if (k <= 0) return;
+    const x = 1330, y = 360 + i * 175;
+    ctx.save(); ctx.translate(x, y); ctx.scale(k, k); ctx.rotate((i - 1) * .04);
+    shape(rectPts(-260, -62, 520, 124), '#fff', { width: 6, seed: 100 + i });
+    text(s, 0, 0, { size: 62, color: col });
+    ctx.restore();
+    // 打叉
+    const xp = prog(t, 2.7 + i * .15, 3.0 + i * .15);
+    if (xp > 0) {
+      strokePts(linePts(x - 230, y - 50, x + 230, y + 50, 10), { color: '#E04848', width: 12, seed: 110 + i, progress: E.out(clamp(xp * 2)) });
+      strokePts(linePts(x + 230, y - 50, x - 230, y + 50, 10), { color: '#E04848', width: 12, seed: 120 + i, progress: E.out(clamp(xp * 2 - 1)) });
+    }
+  });
+}
+
+// ---------- 第 4 幕 11~15.5s：惊喜——画面"撕开"，露出这段视频的真实代码 ----------
+function scene4(t) {
+  // 底层：深色代码编辑器，滚动播放本视频的真实源码
+  ctx.fillStyle = '#1e1e2a'; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.font = `28px ${MONO}`; ctx.textBaseline = 'top';
+  const lh = 38, scroll = t * 260, first = Math.floor(scroll / lh);
+  for (let i = 0; i < 32; i++) {
+    const idx = (first + i) % SRC.length, y = 60 + i * lh - (scroll % lh), line = SRC[idx].slice(0, 70);
+    ctx.fillStyle = '#5c6370'; ctx.fillText(String(idx + 1).padStart(4, ' '), 40, y);
+    ctx.fillStyle = /function|const|let|return|if|for/.test(line) ? '#c678dd' : /'.*'|`.*`/.test(line) ? '#98c379' : '#abb2bf';
+    ctx.fillText(line, 140, y);
+  }
+  ctx.restore();
+  // 右侧：代码"变成"小橙——线条随代码一笔一笔长出来
+  const g = prog(t, .6, 3.2);
+  ctx.save(); ctx.globalAlpha = .96; fillPts(rectPts(1180, 120, 640, 640), C.paper, 130, 4); ctx.restore();
+  strokePts(rectPts(1180, 120, 640, 640), { color: C.yellow, width: 6, seed: 131 });
+  ctx.save(); ctx.beginPath(); ctx.rect(1180, 120, 640, 640); ctx.clip();
+  const body = ellPts(1500, 450, 190, 175, 40);
+  if (g > .45) { ctx.save(); ctx.globalAlpha = clamp((g - .45) * 3); fillPts(body, C.orange, 132); ctx.restore(); }
+  strokePts(body, { width: 8, seed: 133, progress: clamp(g * 2.2) });
+  if (g > .5) { fillPts(ellPts(1440, 425, 20, 26, 14), C.ink, 134, 1.5); fillPts(ellPts(1560, 425, 20, 26, 14), C.ink, 135, 1.5); }
+  if (g > .6) { const p = []; for (let i = 0; i <= 10; i++) { const a = Math.PI * i / 10; p.push([1500 + Math.cos(a) * 55, 480 + Math.sin(a) * 42]); } p.push([1555, 480]); shape(p, '#7a2e1a', { width: 6, seed: 136 }); }
+  // 画笔光标跟着线条走
+  if (g < 1) { const i = Math.floor(clamp(g * 2.2) * (body.length - 1)), p = g < .45 ? body[i] : [1500 + Math.cos(T * 9) * 60, 450 + Math.sin(T * 7) * 40];
+    ctx.save(); ctx.fillStyle = C.yellow; ctx.shadowColor = C.yellow; ctx.shadowBlur = 30; ctx.beginPath(); ctx.arc(p[0], p[1], 12, 0, 7); ctx.fill(); ctx.restore(); }
+  ctx.restore();
+  text('← 左边就是本视频的真实代码', 1500, 830, { size: 44, color: '#fff', font: HAND, progress: prog(t, 1.5, 2.3) });
+  // 上层：纸张从中间撕开
+  const rip = E.inOut(prog(t, 0, .9));
+  if (rip < 1) {
+    const tear = (side) => { const pts = []; const r = rng(7); for (let y = -20; y <= H + 20; y += 45) pts.push([W / 2 + (r() - .5) * 70, y]); return pts; };
+    const edge = tear();
+    [-1, 1].forEach(side => {
+      const off = side * rip * W * .62;
+      ctx.save(); ctx.translate(off, 0); ctx.rotate(side * rip * .06);
+      ctx.beginPath();
+      if (side < 0) { ctx.moveTo(-50, -50); edge.forEach(p => ctx.lineTo(p[0], p[1])); ctx.lineTo(-50, H + 50); }
+      else { ctx.moveTo(W + 50, -50); edge.forEach(p => ctx.lineTo(p[0], p[1])); ctx.lineTo(W + 50, H + 50); }
+      ctx.closePath(); ctx.save(); ctx.clip(); ctx.drawImage(paperTex, 0, 0); ctx.restore();
+      strokePts(edge, { color: '#c9b79a', width: 8, seed: 140 + side, passes: 1 });
+      ctx.restore();
+    });
+  }
+  // 盖章：没有人画！
+  const st = prog(t, .9, 1.3);
+  if (st > 0) {
+    const s = lerp(3, 1, E.out(st));
+    ctx.save(); ctx.translate(560, 300); ctx.rotate(-.14); ctx.scale(s, s); ctx.globalAlpha = clamp(st * 2);
+    fillPts(rectPts(-330, -95, 660, 190), C.paper, 151, 4);
+    strokePts(rectPts(-330, -95, 660, 190), { color: '#E04848', width: 12, seed: 150 });
+    text('没有人画！', 0, 0, { size: 120, color: '#E04848', wobble: 0 });
+    ctx.restore();
+    if (st < 1) { ctx.save(); ctx.globalAlpha = (1 - st) * .5; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  }
+  if (t > 2.4) {
+    const k = E.back(prog(t, 2.4, 2.9));
+    ctx.save(); ctx.translate(560, 520); ctx.scale(k, k);
+    fillPts(rectPts(-400, -70, 800, 140), C.yellow, 160, 4);
+    text('AI 用代码"写"出来的', 0, 0, { size: 70, color: C.ink });
+    ctx.restore();
+  }
+}
+
+// ---------- 第 5 幕 15.5~20s：片名 + 本集预告的三步 ----------
+const STEPS = [['💡', '想剧本', C.yellow], ['✏️', '写代码画画', C.blue], ['🔍', '自己检查', C.green]];
+function scene5(t) {
+  drawPaper(); doodles(T, 1);
+  const k = E.back(prog(t, 0, .6));
+  ctx.save(); ctx.translate(W / 2, 230); ctx.scale(k, k); ctx.rotate(Math.sin(T * 2) * .015);
+  fillPts(rectPts(-640, -105, 1280, 210), '#fff', 170, 5);
+  strokePts(rectPts(-640, -105, 1280, 210), { width: 7, seed: 171 });
+  text('AI 是怎么做出视频的？', 0, -5, { size: 110, color: C.ink, progress: prog(t, .2, 1.1) });
+  ctx.restore();
+  marker(W / 2 - 520, 300, 1040, 26, C.orange, prog(t, 1, 1.5));
+  // 三步卡片依次弹出，中间用手绘箭头连起来
+  STEPS.forEach(([ic, s, col], i) => {
+    const t0 = 1.4 + i * .55, kk = E.back(prog(t, t0, t0 + .45)); if (kk <= 0) return;
+    const x = 460 + i * 500, y = 600 + Math.sin(T * 3 + i) * 8;
+    ctx.save(); ctx.translate(x, y); ctx.scale(kk, kk); ctx.rotate((i - 1) * .05);
+    shape(rectPts(-180, -130, 360, 260), col, { width: 7, seed: 180 + i });
+    hatch(-180, 70, 360, 60, 'rgba(0,0,0,.12)', 18, 190 + i);
+    ctx.font = `90px "Segoe UI Emoji","Apple Color Emoji",sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(ic, 0, -40);
+    text(s, 0, 70, { size: 52 });
+    text(`第${'一二三'[i]}步`, -120, -100, { size: 30, color: '#fff', stroke: C.ink, font: HAND });
+    ctx.restore();
+    if (i < 2) strokePts([[x + 200, y], [x + 245, y - 15], [x + 290, y]], { color: C.ink, width: 7, seed: 200 + i, progress: E.out(prog(t, t0 + .4, t0 + .7)) });
+  });
+  // 小橙从右下角探出头：“3 分钟，包你看懂”
+  const peek = E.back(prog(t, 3.0, 3.5));
+  mascot(1720, lerp(1250, 930, peek), .85, T, { look: [-1, -1], mouth: 'grin', arm: 'wave' });
+  if (peek > .5) {
+    ctx.save(); ctx.translate(1440, 860); ctx.scale(peek, peek); ctx.rotate(-.06);
+    shape(ellPts(0, 0, 170, 60, 26), '#fff', { width: 5, seed: 210 });
+    text('3分钟，包你看懂', 0, 0, { size: 40, color: C.orangeD, font: HAND });
+    ctx.restore();
+  }
+  // 结尾淡出
+  const fo = prog(t, 4.2, 4.5);
+  if (fo > 0) { ctx.fillStyle = `rgba(251,246,236,${fo})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// ================= 时间线 & 播放器 =================
+const SCENES = [[0, 3.5, scene1], [3.5, 7.5, scene2], [7.5, 11, scene3], [11, 15.5, scene4], [15.5, 20, scene5]];
+const snapCv = document.createElement('canvas'); snapCv.width = 960; snapCv.height = 540;
+function render(t) {
+  T = t; BOIL = Math.floor(t * 8);
+  const sc = SCENES.find(s => t >= s[0] && t < s[1]) || SCENES[SCENES.length - 1];
+  ctx.save(); sc[2](t - sc[0]); ctx.restore();
+  // 转场：每个场景开头一个快速的"翻页"白闪
+  const since = t - sc[0];
+  if (since < .18 && sc[0] > 0 && sc[2] !== scene4) { ctx.fillStyle = `rgba(251,246,236,${1 - since / .18})`; ctx.fillRect(0, 0, W, H); }
+  // 第 2 幕需要"画中画中画"：把当前帧（不含字幕）存下来，下一帧塞进屏幕里
+  if (sc[2] === scene2) { snapCv.getContext('2d').drawImage(cv, 0, 0, 960, 540); snap = snapCv; }
+  else snap = null;
+  captions(t);
+}
+
+const playBtn = document.getElementById('play'), seek = document.getElementById('seek'), timeEl = document.getElementById('time');
+let playing = true, cur = 0, last = performance.now();
+function frame(now) {
+  const dt = Math.min(.1, (now - last) / 1000); last = now;
+  if (playing) { cur += dt; if (cur >= DUR) { cur = DUR - .001; setPlaying(false); } }
+  render(cur);
+  seek.value = cur; timeEl.textContent = `${cur.toFixed(1)} / ${DUR.toFixed(1)}s`;
+  requestAnimationFrame(frame);
+}
+function setPlaying(p) { playing = p; playBtn.textContent = p ? '⏸ 暂停' : '▶ 播放'; }
+playBtn.onclick = () => { if (!playing && cur >= DUR - .01) cur = 0; setPlaying(!playing); };
+document.getElementById('restart').onclick = () => { cur = 0; setPlaying(true); };
+seek.oninput = () => { cur = +seek.value; };
+addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'BUTTON') { e.preventDefault(); playBtn.click(); } });
+// 支持 ?t=12 直接跳到某一秒（方便逐段检查）
+const qt = +new URLSearchParams(location.search).get('t'); if (qt) cur = qt;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
