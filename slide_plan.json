@@ -1,0 +1,29 @@
+{
+  "paper": "C:/Users/16947/Downloads/2607.07663v1.pdf",
+  "reference": "C:/Users/16947/Downloads/合稿-20260707电力人工智能自主科研引擎方案汇报.pptx",
+  "slides": [
+    {"purpose": "封面：论文题目与作者", "source": "p.1 题名、作者、单位、2026.07", "reference_slide": "ref-01 封面：空白版式青绿横带 + 两行大字标题 + 底部单位日期", "adaptation": "保留母版横带与 logo；标题改为论文中文题名两行；底部写论文作者与 arXiv 号，不虚构汇报单位"},
+    {"purpose": "目录：四章结构，第一章高亮", "source": "全文结构 §1–§9", "reference_slide": "ref-02 目录页", "adaptation": "保留灰块+青绿竖条+四行编号条；章名换成本稿四章"},
+    {"purpose": "AI 正在参与自身改进，Anthropic 五阶段连续谱给出位置：执行接近闭环，方向设定仍靠人", "source": "p.1 摘要、p.2 §1 Anthropic 连续谱、>80% 合并代码", "reference_slide": "ref-07 左时间线/流程 + 右“主要启示”栏", "adaptation": "左侧画五阶段阶梯（自绘），标出今日位置与 >80%；右侧主要启示栏放论文对该框架的使用定位；底部结论行"},
+    {"purpose": "三个观察决定论文结构：自我改进不是一件事、领域增长快于沉淀、瓶颈是评估器", "source": "p.2 §1 Three observations、Contributions", "reference_slide": "ref-16 三挑战面板 + 浮动“解决思路”标签 + 底部红色结论", "adaptation": "三栏换成三个观察，浮动标签改为“论文对策”，底部结论写四项贡献链"},
+    {"purpose": "两轴分类：改进对象 × 闭环程度，文献主体在 human-on-the-loop 中间行", "source": "p.4–5 §2.2, Fig.1", "reference_slide": "ref-34 层级框图（左侧青绿竖标签列 + 右侧描边行）", "adaptation": "左侧竖标签改为三种闭环程度，列头为四类对象，12 个单元格放代表系统；右侧括注 bounded / open-ended"},
+    {"purpose": "语料 1,250 篇，2026 年占 74%；自我评估 82% 为 2026 年，增长最快", "source": "p.3 Table 1, p.5–6 §2.3 Corpus and method, Limitations", "reference_slide": "ref-18 上方流程链 + 下方分区", "adaptation": "上方画种子检索→对齐→补充检索流程；下方左为 Table 1 原生条形图，右为局限性三条"},
+    {"purpose": "章节页：第二章四类自我改进机制", "source": "§3–§6", "reference_slide": "ref-17 目录页（第二项高亮）", "adaptation": "同目录页，第二章高亮"},
+    {"purpose": "部署时自我进化按持久性排序：输出一次性、TTT 持续一次会话、Harness/技能无限累积", "source": "p.6–10 §3.1–3.4, Fig.3, Huang et al. 负结果", "reference_slide": "ref-04 三栏面板 + 右上定位标签（ref-37）", "adaptation": "三栏对应 Fig.3 三段，下方画持久性时间轴；右上四类机制定位标签，第一项实心"},
+    {"purpose": "Harness 与技能进化：被进化的对象越来越靠近评估本身，但 LLM 写的技能尚无增益", "source": "p.10–12 §3.5–3.6, SkillsBench +16.2, Pareto +7.1 / 20×", "reference_slide": "ref-34 层级框（逐层列出）+ ref-07 右侧启示栏", "adaptation": "左侧画进化层级阶梯（提示→验证→拓扑→数据→基础设施），右侧放三个关键数字与风险"},
+    {"purpose": "训练时自我迭代：五种范式共享一个闭环，差别在谁提供评估信号", "source": "p.13 Fig.4, §4.1–4.5", "reference_slide": "ref-21 闭环总体设计图", "adaptation": "中心闭环四站（模型→生成→评估选择→更新），五范式挂在环外，两种失败模式挂在评估站"},
+    {"purpose": "训练闭环不会自稳定：崩溃是默认动力学，需要工程化对抗", "source": "p.14–16 §4.1 Lin rise-and-collapse, §4.3 OPSD 风格漂移, §4.4 两个杠杆", "reference_slide": "ref-16 三面板 + 底部结论", "adaptation": "三面板换成三类不稳定现象，每栏“现象/机制/对策”，底部为三条共同事实"},
+    {"purpose": "Auto Research：评估器是程序时已超越专家，评估器是科学判断时验证跟不上", "source": "p.20–22 §6.1–6.2, A-Evolve-Training 0.86 vs 0.87", "reference_slide": "ref-07 左右双区 + 右侧启示栏", "adaptation": "左区程序发现、右区 AI 科学家，A-Evolve-Training 作为重点卡；右侧启示栏"},
+    {"purpose": "批判性文献：可行不等于质量，可审计性成为新瓶颈，压力下诚信失守 34.2%", "source": "p.22–23 §6.3", "reference_slide": "ref-37 表格页（青绿表头）", "adaptation": "表格三行三批判 + 证据 + 含义；下方结论行"},
+    {"purpose": "章节页：第三章 自我评估与验证层级", "source": "§5", "reference_slide": "ref-26 目录页（第三项高亮）", "adaptation": "同目录页，第三章高亮"},
+    {"purpose": "评估器设计空间：三个锚点 + 评估器开始被同样的闭环改进", "source": "p.17 §5.1, ~80% judge–human agreement, §8 evaluator co-evolution 5 次", "reference_slide": "ref-18 上流程 + 下五底座", "adaptation": "上方三锚点，下方五次独立出现的共同进化做法（编号格）"},
+    {"purpose": "验证层级：信号可靠性自上而下递减，自我改进强度追随此层级", "source": "p.17–18 §5.2, Fig.5, Mirror Loop −55%", "reference_slide": "ref-21 中心图 + 两侧注释", "adaptation": "画五级阶梯（人类判断为虚线顶层），左右双向轴，右侧 Mirror Loop 证据卡"},
+    {"purpose": "三类失败模式都源于违反验证层级", "source": "p.18–19 §5.3", "reference_slide": "ref-04 三栏面板", "adaptation": "三栏失败模式，每栏机制+证据+结论，红色描边"},
+    {"purpose": "结果级与过程级改进：运营支出 vs 资本支出，学习者类比", "source": "p.19–20 §5.5", "reference_slide": "ref-37 表格页", "adaptation": "左侧学习者类比对照表（人类行为→机器对应），右侧两种成本结构对比"},
+    {"purpose": "章节页：第四章 理论边界、安全与展望", "source": "§7–§9", "reference_slide": "ref-33 目录页（第四项高亮）", "adaptation": "同目录页，第四章高亮"},
+    {"purpose": "理论边界：四个角度都限制开放式 RSI，有界自我改进是理论允许的部分", "source": "p.23–24 §7.1–7.2", "reference_slide": "ref-34 层级框图", "adaptation": "左侧四角度竖标签，右侧结论与条件；上方 Socratic 三条件"},
+    {"purpose": "安全与治理：现在处于情景二，要看的起飞信号是非可验证任务上验证层级的上移", "source": "p.24–25 §7.3, Anthropic 三情景", "reference_slide": "ref-18 横向流程 + 下方分区", "adaptation": "三情景横排并标出当前位置，下方安全证据与治理缺口"},
+    {"purpose": "五个开放问题与结论：自我改进的真实程度取决于验证", "source": "p.27–28 §8 Open problems, §9 Conclusion", "reference_slide": "ref-37 表格页 + ref-16 底部结论行", "adaptation": "表格列出五个开放问题（按杠杆排序），底部红色结论行"},
+    {"purpose": "结束页", "source": "—", "reference_slide": "ref-44 结束页", "adaptation": "空白版式横带中“汇报完毕！”"}
+  ]
+}

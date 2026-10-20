@@ -1,8 +1,9 @@
-"""Toolkit for building native, editable PPTX slides in the HarnessDev deck style.
+"""Toolkit for building native, editable PPTX slides with a project-specific theme.
 
 Layout coordinates are deck pixels on a 1600x900 canvas (1 px = 0.6 pt); font sizes are
 PowerPoint points. Every text run goes through set_runs(), which rejects anything below MIN_PT.
 """
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from urllib.parse import quote
 
 from lxml import etree
 from PIL import Image, ImageFont
+from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE, XL_MARKER_STYLE
@@ -27,17 +29,20 @@ PX = 7620                      # EMU per deck pixel
 PT_PER_PX = 0.6
 SLIDE_W, SLIDE_H = Emu(12192000), Emu(6858000)
 FONT = 'Microsoft YaHei'
-CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
+BROWSERS = [r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+            r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+            r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+            r'C:\Program Files\Microsoft\Edge\Application\msedge.exe']
+# Colour *roles*, not a palette: configure_theme() must set them from the current reference.
+# Role names are historical: 'navy' = primary/heading, 'blue' = accent, 'gold' = secondary
+# accent, 'rose' = warning/negative, 'pale'/'zone' = tints, 'line' = hairlines.
 C = dict(navy='163B65', blue='347BC1', gold='D5B96F', rose='C98078', pale='EAF2FA', paleRose='F3E4E1',
          line='CFDCE8', text='243445', grey='64748B', neutral='8A99A8', white='FFFFFF', paleGold='F7F0DE',
          zone='F5F9FD', chipGrey='EEF1F5', goldLine='E9DAB3', goldText='9A7B32', darkRose='A85C54', sky='4F9AD6')
-MODS = [('E', '执行', 'Execution', '163B65'), ('T', '工具', 'Tools', '347BC1'), ('C', '上下文', 'Context', '4F9AD6'),
-        ('S', '状态', 'State', 'C98078'), ('L', '生命周期', 'Lifecycle', 'B39552'), ('V', '验证', 'Verification', '5B7A99')]
-LINEAGE = {'Gemini': '0072B2', 'Opus': 'E69F00', 'Qwen': '009E73', 'DeepSeek': '8E44AD', 'GPT-5.5': 'D55E00'}
 
 
 def E(v):
-    return Emu(int(round(v * PX)))
+    return Emu(int(round(v * PX)))  # PX may be rescaled by new_presentation(base)
 
 
 def fpx(pt):
@@ -62,11 +67,28 @@ def plain(s):
     return _SUB.sub(lambda m: m.group(1) or m.group(2), s)
 
 
+def _font_file(bold=False):
+    if FONT == 'Microsoft YaHei':
+        return r'C:\Windows\Fonts\msyhbd.ttc' if bold else r'C:\Windows\Fonts\msyh.ttc'
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts') as fonts:
+        index = 0
+        while True:
+            try:
+                label, filename, _ = winreg.EnumValue(fonts, index)
+            except OSError:
+                break
+            index += 1
+            if FONT.lower() in label.lower() and ('bold' in label.lower()) == bold:
+                return str(Path(r'C:\Windows\Fonts') / filename)
+    raise ValueError(f'Installed font not found for measurement: {FONT} (bold={bold})')
+
+
 def measure(s, pt, bold=False):
     """Rendered width in deck px (subscripts measured at full size: a slight overestimate)."""
-    key = (pt, bold)
+    key = (FONT, pt, bold)
     if key not in _fonts:
-        path = r'C:\Windows\Fonts\msyhbd.ttc' if bold else r'C:\Windows\Fonts\msyh.ttc'
+        path = _font_file(bold)
         _fonts[key] = ImageFont.truetype(path, int(round(fpx(pt) * 4)))
     # calibrated against PowerPoint's TextFrame2.BoundWidth: ~2.5% wider than PIL's advance width
     return _fonts[key].getlength(plain(s)) / 4 * 1.025
@@ -90,8 +112,9 @@ def wrap_lines(s, pt, bold, width):
     return lines or ['']
 
 
-def set_runs(par, s, pt, bold=False, color=C['text'], italic=False):
+def set_runs(par, s, pt, bold=False, color=None, italic=False):
     """Append runs to a paragraph; '_X' / '_{..}' become subscript runs."""
+    color = C['text'] if color is None else color
     if pt < MIN_PT:
         raise ValueError(f'font {pt}pt < {MIN_PT}pt: {s!r}')
     for part in [p for p in re.split(r'(_\{[^}]*\}|_[A-Za-z0-9])', s) if p]:
@@ -124,7 +147,7 @@ def strip_style(shape):
 
 def add_shadow(shape, alpha=14, blur=16, dist=5):
     eff = etree.SubElement(shape._element.spPr, qn('a:effectLst'))
-    sh = etree.SubElement(eff, qn('a:outerShdw'), blurRad=str(blur * PX), dist=str(dist * PX),
+    sh = etree.SubElement(eff, qn('a:outerShdw'), blurRad=str(int(blur * PX)), dist=str(int(dist * PX)),
                           dir='5400000', algn='t', rotWithShape='0')
     clr = etree.SubElement(sh, qn('a:srgbClr'), val=C['navy'])
     etree.SubElement(clr, qn('a:alpha'), val=str(alpha * 1000))
@@ -167,8 +190,9 @@ class Canvas:
         return out + [('溢出', o, '') for o in self.overflow]
 
     # ---- text ----
-    def text(self, s, x, y, pt=18, bold=False, color=C['text'], align='l', name=None):
+    def text(self, s, x, y, pt=18, bold=False, color=None, align='l', name=None):
         """Single line; (x, y) = anchor point at vertical centre (left/centre/right by align)."""
+        color = C['text'] if color is None else color
         tw = measure(s, pt, bold)
         w = tw * 1.05 + 8
         h = fpx(pt) * 1.5
@@ -202,8 +226,9 @@ class Canvas:
             tb.name = name
         return tb
 
-    def para(self, s, x, y, w, pt=18, bold=False, color=C['text'], lh=1.3, align='l', name=None):
+    def para(self, s, x, y, w, pt=18, bold=False, color=None, lh=1.3, align='l', name=None):
         """Wrapped paragraph with top-left at (x, y); returns bottom y (estimated)."""
+        color = C['text'] if color is None else color
         lines = wrap_lines(s, pt, bold, w)
         n = len(lines)
         h = n * fpx(pt) * lh * 1.2
@@ -219,7 +244,9 @@ class Canvas:
             tb.name = name
         return y + h
 
-    def bullets(self, items, x, y, w, pt=18, color=C['text'], dot=C['blue'], gap=12, lh=1.3):
+    def bullets(self, items, x, y, w, pt=18, color=None, dot=None, gap=12, lh=1.3):
+        color = C['text'] if color is None else color
+        dot = C['blue'] if dot is None else dot
         for s in items:
             self.box(x, y + fpx(pt) * 0.55, 10, 10, fill=dot, name='项目符号')
             y = self.para(s, x + 24, y, w - 24, pt=pt, color=color, lh=lh) + gap
@@ -251,7 +278,8 @@ class Canvas:
             sp.name = name
         return sp
 
-    def label_box(self, s, x, y, w, h, pt=18, bold=True, color=C['white'], align='c', **kw):
+    def label_box(self, s, x, y, w, h, pt=18, bold=True, color=None, align='c', **kw):
+        color = C['white'] if color is None else color
         tw = measure(s, pt, bold)
         if tw > w - 8:
             self.overflow.append(f'[溢出框] {plain(s)}')
@@ -263,7 +291,9 @@ class Canvas:
         set_runs(p, s, pt, bold, color)
         return sp
 
-    def pill(self, s, cx, cy, pt=16, fill=C['navy'], color=C['white'], line=None, padX=16, h=None, bold=True, shadow=False):
+    def pill(self, s, cx, cy, pt=16, fill=None, color=None, line=None, padX=16, h=None, bold=True, shadow=False):
+        fill = C['navy'] if fill is None else fill
+        color = C['white'] if color is None else color
         h = h or fpx(pt) * 1.75
         w = measure(s, pt, bold) + padX * 2
         self._reg(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, f'标签 {plain(s)}')
@@ -288,17 +318,20 @@ class Canvas:
     def circle(self, cx, cy, r, fill=None, line=None, lw=3, shadow=False, name='圆'):
         return self.box(cx - r, cy - r, 2 * r, 2 * r, fill=fill, line=line, lw=lw, shadow=shadow, shape=MSO_SHAPE.OVAL, name=name)
 
-    def num(self, n, cx, cy, r=22, fill=C['blue'], pt=18):
+    def num(self, n, cx, cy, r=22, fill=None, pt=18):
+        fill = C['blue'] if fill is None else fill
         sp = self.circle(cx, cy, r, fill=fill, name=f'序号 {n}')
         p = sp.text_frame.paragraphs[0]
         p.alignment = PP_ALIGN.CENTER
         set_runs(p, str(n), pt, True, C['white'])
         return sp
 
-    def halo(self, cx, cy, r, fill=C['pale']):
+    def halo(self, cx, cy, r, fill=None):
+        fill = C['pale'] if fill is None else fill
         return self.circle(cx, cy, r, fill=fill, shadow=True, name='底托')
 
-    def line(self, x1, y1, x2, y2, color=C['line'], lw=2, dash=False, name='线'):
+    def line(self, x1, y1, x2, y2, color=None, lw=2, dash=False, name='线'):
+        color = C['line'] if color is None else color
         sp = self.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, E(x1), E(y1), E(x2), E(y2))
         strip_style(sp)
         sp.line.color.rgb = rgb(color)
@@ -308,7 +341,8 @@ class Canvas:
         sp.name = name
         return sp
 
-    def arrow(self, x1, y1, x2, y2, color=C['blue'], lw=3.5, dash=False, ctrl=None, both=False):
+    def arrow(self, x1, y1, x2, y2, color=None, lw=3.5, dash=False, ctrl=None, both=False):
+        color = C['blue'] if color is None else color
         sp = self.line(x1, y1, x2, y2, color, lw, dash, '箭头') if ctrl is None else self._quad(x1, y1, ctrl, x2, y2, color, lw, dash)
         ln = sp.line._get_or_add_ln()
         etree.SubElement(ln, qn('a:round'))
@@ -339,7 +373,8 @@ class Canvas:
         sp.name = '弧形箭头'
         return sp
 
-    def block_arrow(self, x, y, w, h, fill=C['gold'], name='过渡箭头'):
+    def block_arrow(self, x, y, w, h, fill=None, name='过渡箭头'):
+        fill = C['gold'] if fill is None else fill
         a = self.box(x, y, w, h, fill=fill, shape=MSO_SHAPE.RIGHT_ARROW, name=name)
         a.adjustments[0], a.adjustments[1] = 0.5, 0.45
         return a
@@ -352,6 +387,18 @@ class Canvas:
         vw, vh = self.icons.aspect(key)
         w, h = (size, size * vh / vw) if vw >= vh else (size * vw / vh, size)
         return self.icon(key, cx - w / 2, cy - h / 2, w, h, name)
+
+    def svg(self, markup, x, y, w, h=None, name='插图'):
+        """Embed one-off SVG artwork drawn for this slide (with PNG fallback).
+
+        Keep labels out of the SVG: put words on top with text()/para() so they stay editable.
+        """
+        if 'viewBox=' not in markup:
+            raise ValueError('SVG artwork needs a viewBox')
+        key = 'art-' + hashlib.sha1(markup.encode('utf-8')).hexdigest()[:10]
+        ICON_SVG[key] = markup
+        ICON_LABEL[key] = name
+        return self.icon(key, x, y, w, h, name)
     # ---- deck chrome ----
     def title(self, s):
         self.text(s, 84, 78, pt=32, bold=True, color=C['navy'], name='标题')
@@ -362,20 +409,24 @@ class Canvas:
     def band(self, s, y=752, h=64, x=84, w=1432, pt=20):
         self.label_box(s, x, y, w, h, pt=pt, bold=True, color=C['navy'], fill=C['pale'], name='结论条')
 
-    def panel(self, x, y, w, h, head, fill=C['navy'], head_h=56, pt=19):
-        """White card with a solid header bar (deck's standard panel)."""
+    def panel(self, x, y, w, h, head, fill=None, head_h=56, pt=19):
+        """White card with a solid header bar."""
+        fill = C['navy'] if fill is None else fill
         self.cards.append((x, y + head_h, x + w, y + h, f'面板 {head}'))
         self.box(x, y + head_h, w, h - head_h, fill=C['white'], line=C['line'], name=f'面板 {head}')
         self.label_box(head, x, y, w, head_h, pt=pt, fill=fill, name=f'面板标题 {head}')
 
-    def zone(self, x, y, w, h, head=None, head_fill=C['navy'], pt=19):
-        """Rounded light zone with a floating pill heading (illustration style)."""
+    def zone(self, x, y, w, h, head=None, head_fill=None, pt=19):
+        """Rounded light zone with a floating pill heading."""
+        head_fill = C['navy'] if head_fill is None else head_fill
         self.cards.append((x, y + 24, x + w, y + h, f'分区 {head or ""}'))
         self.box(x, y, w, h, fill=C['zone'], line=C['line'], r=18, name=f'分区 {head or ""}')
         if head:
             self.pill(head, x + w / 2, y, pt=pt, fill=head_fill, padX=26, shadow=True)
 
-    def card(self, x, y, w, h, fill=C['white'], line=C['line'], r=14, shadow=True, name='卡片'):
+    def card(self, x, y, w, h, fill=None, line='theme', r=14, shadow=True, name='卡片'):
+        fill = C['white'] if fill is None else fill
+        line = C['line'] if line == 'theme' else line
         self.cards.append((x, y, x + w, y + h, name))
         return self.box(x, y, w, h, fill=fill, line=line, r=r, shadow=shadow, name=name)
 
@@ -448,6 +499,8 @@ class Canvas:
 
     def line_chart(self, x, y, w, h, categories, series, y_max, y_min=0, major=None, legend=False, title=None, pt=16):
         """Native line chart; series = [(name, values, hex color, dashed)]. None values are gaps."""
+        if pt < MIN_PT:
+            raise ValueError(f'chart font {pt}pt < {MIN_PT}pt')
         cd = CategoryChartData()
         cd.categories = categories
         for name, vals, _, _ in series:
@@ -497,6 +550,44 @@ class Canvas:
         return gf
 
 
+def new_presentation(base=None, layout=None):
+    """Return (presentation, layout) for building.
+
+    base=None: a blank 16:9 deck. base=path: reuse that deck's masters, theme and
+    decorations (logo, header band, footer) with all its slides removed - use it when
+    the reference is the template the new deck must belong to. The 1600x900 coordinate
+    system is scaled to the base deck's 16:9 size; layout picks a layout by name,
+    otherwise the one most reference slides use. For a cover or section page on a
+    different layout, call prs.slides.add_slide() with that layout yourself.
+    """
+    global PX, SLIDE_W, SLIDE_H
+    if base is None:
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+        return prs, prs.slide_layouts[6]
+    prs = Presentation(base)
+    if abs(prs.slide_width / prs.slide_height - 16 / 9) > 0.01:
+        raise ValueError(f'base deck is not 16:9 ({prs.slide_width}x{prs.slide_height}); the 1600x900 grid needs 16:9')
+    PX = prs.slide_width / 1600
+    PX = int(PX) if PX == int(PX) else PX
+    SLIDE_W, SLIDE_H = prs.slide_width, prs.slide_height
+    usage = {}
+    for s in prs.slides:
+        usage[s.slide_layout.name] = usage.get(s.slide_layout.name, 0) + 1
+    ids = prs.slides._sldIdLst
+    for sid in list(ids):
+        prs.part.drop_rel(sid.rId)
+        ids.remove(sid)
+    layouts = list(prs.slide_layouts)
+    if layout is not None:
+        named = [l for l in layouts if l.name == layout]
+        if not named:
+            raise ValueError(f'layout {layout!r} not in base deck: {[l.name for l in layouts]}')
+        return prs, named[0]
+    # Default: the layout most reference slides use (its body pages), fewest placeholders on ties.
+    return prs, max(layouts, key=lambda l: (usage.get(l.name, 0), -len(l.placeholders)))
+
+
 def notes(slide, s):
     slide.notes_slide.notes_text_frame.text = s
 J = 'stroke-linejoin="round" stroke-linecap="round"'
@@ -516,7 +607,7 @@ def svg_robot(accent):
                 f'<rect x="13" y="24" width="74" height="56" rx="19" fill="{WHITE}"/>'
                 f'<path d="M18,118 Q18,86 50,86 Q82,86 82,118 Z" fill="{WHITE}"/></g>'
                 f'<rect x="24" y="35" width="52" height="32" rx="12" fill="{NAVY}"/>'
-                f'<circle cx="38" cy="51" r="5.5" fill="#9FD4FF"/><circle cx="62" cy="51" r="5.5" fill="#9FD4FF"/>')
+                f'<circle cx="38" cy="51" r="5.5" fill="#{lighten(accent, 0.5)}"/><circle cx="62" cy="51" r="5.5" fill="#{lighten(accent, 0.5)}"/>')
 
 
 def svg_doc(stroke, line_color, dashed=False):
@@ -563,8 +654,8 @@ def svg_warn(color):
 def svg_terminal():
     b = '#' + C['blue']
     return _svg('0 0 96 76', f'<rect x="3" y="3" width="90" height="70" rx="10" fill="{WHITE}" stroke="{NAVY}" stroke-width="3.2"/>'
-                             f'<path d="M3,20 H93" stroke="{NAVY}" stroke-width="3"/><circle cx="14" cy="12" r="3" fill="#C98078"/>'
-                             f'<circle cx="24" cy="12" r="3" fill="#D5B96F"/><circle cx="34" cy="12" r="3" fill="{b}"/>'
+                             f'<path d="M3,20 H93" stroke="{NAVY}" stroke-width="3"/><circle cx="14" cy="12" r="3" fill="#{C["rose"]}"/>'
+                             f'<circle cx="24" cy="12" r="3" fill="#{C["gold"]}"/><circle cx="34" cy="12" r="3" fill="{b}"/>'
                              f'<path d="M18,36 L30,46 L18,56" fill="none" stroke="{b}" stroke-width="4" {J}/>'
                              f'<line x1="38" y1="56" x2="62" y2="56" stroke="{b}" stroke-width="4" {J}/>')
 
@@ -573,25 +664,25 @@ def svg_code():
     b = '#' + C['blue']
     return _svg('0 0 80 100', f'<g fill="none" stroke-width="3.2" {J}><path d="M4,4 H58 L76,22 V96 H4 Z" fill="{WHITE}" stroke="{NAVY}"/>'
                               f'<path d="M58,4 V22 H76" stroke="{NAVY}"/><path d="M28,46 L16,58 L28,70" stroke="{b}" stroke-width="4.5"/>'
-                              f'<path d="M52,46 L64,58 L52,70" stroke="{b}" stroke-width="4.5"/><path d="M44,42 L36,74" stroke="#D5B96F" stroke-width="4.5"/></g>')
+                              f'<path d="M52,46 L64,58 L52,70" stroke="{b}" stroke-width="4.5"/><path d="M44,42 L36,74" stroke="#{C["gold"]}" stroke-width="4.5"/></g>')
 
 
 def svg_chart():
     return _svg('0 0 90 80', f'<rect x="3" y="3" width="84" height="74" rx="10" fill="{WHITE}" stroke="{NAVY}" stroke-width="3.2"/>'
-                             f'<rect x="16" y="44" width="12" height="22" rx="2" fill="#8A99A8"/><rect x="38" y="30" width="12" height="36" rx="2" fill="#D5B96F"/>'
-                             f'<rect x="60" y="16" width="12" height="50" rx="2" fill="#347BC1"/>')
+                             f'<rect x="16" y="44" width="12" height="22" rx="2" fill="#{C["neutral"]}"/><rect x="38" y="30" width="12" height="36" rx="2" fill="#{C["gold"]}"/>'
+                             f'<rect x="60" y="16" width="12" height="50" rx="2" fill="#{C["blue"]}"/>')
 
 
 def svg_pen():
     return _svg('0 0 80 100', f'<g fill="none" stroke-width="3.2" {J}><path d="M4,4 H58 L76,22 V96 H4 Z" fill="{WHITE}" stroke="{NAVY}"/>'
-                              f'<path d="M58,4 V22 H76" stroke="{NAVY}"/><line x1="16" y1="44" x2="54" y2="44" stroke="#347BC1" stroke-width="4.5"/>'
-                              f'<line x1="16" y1="60" x2="40" y2="60" stroke="#347BC1" stroke-width="4.5"/></g>'
-                              f'<path d="M46,86 L50,72 L72,50 L80,58 L58,80 Z" fill="#D5B96F" stroke="{NAVY}" stroke-width="3" {J}/>')
+                              f'<path d="M58,4 V22 H76" stroke="{NAVY}"/><line x1="16" y1="44" x2="54" y2="44" stroke="#{C["blue"]}" stroke-width="4.5"/>'
+                              f'<line x1="16" y1="60" x2="40" y2="60" stroke="#{C["blue"]}" stroke-width="4.5"/></g>'
+                              f'<path d="M46,86 L50,72 L72,50 L80,58 L58,80 Z" fill="#{C["gold"]}" stroke="{NAVY}" stroke-width="3" {J}/>')
 
 
 def svg_search():
     return _svg('0 0 80 80', f'<circle cx="34" cy="34" r="24" fill="{WHITE}" stroke="{NAVY}" stroke-width="4"/>'
-                             f'<circle cx="34" cy="34" r="14" fill="#EAF2FA"/><line x1="52" y1="52" x2="74" y2="74" stroke="{NAVY}" stroke-width="8" {J}/>')
+                             f'<circle cx="34" cy="34" r="14" fill="#{C["pale"]}"/><line x1="52" y1="52" x2="74" y2="74" stroke="{NAVY}" stroke-width="8" {J}/>')
 
 
 def svg_gear(color):
@@ -613,23 +704,23 @@ def svg_loop():
 
 
 def svg_funnel():
-    return _svg('0 0 80 84', f'<path d="M4,6 H76 L48,42 V74 L32,80 V42 Z" fill="#EAF2FA" stroke="{NAVY}" stroke-width="3.4" {J}/>'
-                             f'<circle cx="24" cy="18" r="4" fill="#D5B96F"/><circle cx="40" cy="20" r="4" fill="#347BC1"/><circle cx="56" cy="17" r="4" fill="#C98078"/>')
+    return _svg('0 0 80 84', f'<path d="M4,6 H76 L48,42 V74 L32,80 V42 Z" fill="#{C["pale"]}" stroke="{NAVY}" stroke-width="3.4" {J}/>'
+                             f'<circle cx="24" cy="18" r="4" fill="#{C["gold"]}"/><circle cx="40" cy="20" r="4" fill="#{C["blue"]}"/><circle cx="56" cy="17" r="4" fill="#{C["rose"]}"/>')
 
 
 def svg_folder():
-    return _svg('0 0 96 76', f'<path d="M4,12 Q4,6 10,6 H36 L44,16 H86 Q92,16 92,22 V66 Q92,72 86,72 H10 Q4,72 4,66 Z" fill="#EAF2FA" stroke="{NAVY}" stroke-width="3.2" {J}/>'
+    return _svg('0 0 96 76', f'<path d="M4,12 Q4,6 10,6 H36 L44,16 H86 Q92,16 92,22 V66 Q92,72 86,72 H10 Q4,72 4,66 Z" fill="#{C["pale"]}" stroke="{NAVY}" stroke-width="3.2" {J}/>'
                              f'<path d="M4,28 H92" stroke="{NAVY}" stroke-width="3"/>')
 
 
 def svg_shield():
-    return _svg('0 0 70 80', f'<path d="M35,4 L64,14 V38 Q64,62 35,76 Q6,62 6,38 V14 Z" fill="#EAF2FA" stroke="{NAVY}" stroke-width="3.4" {J}/>'
-                             f'<path d="M22,40 L32,50 L50,30" fill="none" stroke="#347BC1" stroke-width="5" {J}/>')
+    return _svg('0 0 70 80', f'<path d="M35,4 L64,14 V38 Q64,62 35,76 Q6,62 6,38 V14 Z" fill="#{C["pale"]}" stroke="{NAVY}" stroke-width="3.4" {J}/>'
+                             f'<path d="M22,40 L32,50 L50,30" fill="none" stroke="#{C["blue"]}" stroke-width="5" {J}/>')
 
 
 def svg_flag():
     return _svg('0 0 70 80', f'<line x1="12" y1="6" x2="12" y2="76" stroke="{NAVY}" stroke-width="4" {J}/>'
-                             f'<path d="M12,8 H60 L50,24 L60,40 H12 Z" fill="#D5B96F" stroke="{NAVY}" stroke-width="3" {J}/>')
+                             f'<path d="M12,8 H60 L50,24 L60,40 H12 Z" fill="#{C["gold"]}" stroke="{NAVY}" stroke-width="3" {J}/>')
 
 
 def svg_star(color):
@@ -641,22 +732,27 @@ def svg_star(color):
 
 
 def svg_bulb():
-    return _svg('0 0 60 80', f'<path d="M30,6 A22,22 0 0 1 44,45 Q40,50 40,58 H20 Q20,50 16,45 A22,22 0 0 1 30,6 Z" fill="#F7F0DE" stroke="{NAVY}" stroke-width="3.2" {J}/>'
+    return _svg('0 0 60 80', f'<path d="M30,6 A22,22 0 0 1 44,45 Q40,50 40,58 H20 Q20,50 16,45 A22,22 0 0 1 30,6 Z" fill="#{C["paleGold"]}" stroke="{NAVY}" stroke-width="3.2" {J}/>'
                              f'<line x1="21" y1="66" x2="39" y2="66" stroke="{NAVY}" stroke-width="3.2" {J}/>'
                              f'<line x1="24" y1="74" x2="36" y2="74" stroke="{NAVY}" stroke-width="3.2" {J}/>'
-                             f'<path d="M24,34 L30,42 L36,34" fill="none" stroke="#D5B96F" stroke-width="3" {J}/>')
+                             f'<path d="M24,34 L30,42 L36,34" fill="none" stroke="#{C["gold"]}" stroke-width="3" {J}/>')
 
 
-ICON_SVG = {
-    'robot_blue': svg_robot(C['blue']), 'robot_grey': svg_robot(C['neutral']), 'robot_gold': svg_robot(C['gold']),
-    'doc_grey': svg_doc(C['neutral'], C['line']), 'doc_seed': svg_doc(C['rose'], C['rose'], True), 'doc_blue': svg_doc(C['navy'], C['blue']),
-    'lock_navy': svg_lock(C['navy']), 'lock_grey': svg_lock(C['neutral']), 'eye_blue': svg_eye(C['blue']),
-    'check_blue': svg_check(C['blue']), 'cross_rose': svg_cross(C['rose']), 'warn_rose': svg_warn(C['rose']),
-    'terminal': svg_terminal(), 'code': svg_code(), 'chart': svg_chart(), 'pen': svg_pen(), 'search': svg_search(),
-    'gear_blue': svg_gear(C['blue']), 'gear_grey': svg_gear(C['neutral']), 'loop': svg_loop(), 'funnel': svg_funnel(),
-    'folder': svg_folder(), 'shield': svg_shield(), 'flag': svg_flag(), 'star_navy': svg_star(C['navy']),
-    'star_gold': svg_star(C['gold']), 'bulb': svg_bulb(),
-}
+def _builtin_icons():
+    """Generic starter icons drawn from the current colour roles (rebuilt by configure_theme)."""
+    return {
+        'robot_blue': svg_robot(C['blue']), 'robot_grey': svg_robot(C['neutral']), 'robot_gold': svg_robot(C['gold']),
+        'doc_grey': svg_doc(C['neutral'], C['line']), 'doc_seed': svg_doc(C['rose'], C['rose'], True), 'doc_blue': svg_doc(C['navy'], C['blue']),
+        'lock_navy': svg_lock(C['navy']), 'lock_grey': svg_lock(C['neutral']), 'eye_blue': svg_eye(C['blue']),
+        'check_blue': svg_check(C['blue']), 'cross_rose': svg_cross(C['rose']), 'warn_rose': svg_warn(C['rose']),
+        'terminal': svg_terminal(), 'code': svg_code(), 'chart': svg_chart(), 'pen': svg_pen(), 'search': svg_search(),
+        'gear_blue': svg_gear(C['blue']), 'gear_grey': svg_gear(C['neutral']), 'loop': svg_loop(), 'funnel': svg_funnel(),
+        'folder': svg_folder(), 'shield': svg_shield(), 'flag': svg_flag(), 'star_navy': svg_star(C['navy']),
+        'star_gold': svg_star(C['gold']), 'bulb': svg_bulb(),
+    }
+
+
+ICON_SVG = _builtin_icons()
 ICON_LABEL = {
     'robot_blue': '机器人·蓝', 'robot_grey': '机器人·灰', 'robot_gold': '机器人·金', 'doc_grey': '文档·灰', 'doc_seed': '种子文档',
     'doc_blue': '文档·蓝', 'lock_navy': '锁·深蓝', 'lock_grey': '锁·灰', 'eye_blue': '可见', 'check_blue': '对勾', 'cross_rose': '叉号',
@@ -664,6 +760,36 @@ ICON_LABEL = {
     'gear_grey': '齿轮·灰', 'loop': '循环', 'funnel': '漏斗', 'folder': '文件夹', 'shield': '盾牌', 'flag': '旗帜',
     'star_navy': '星标·深蓝', 'star_gold': '星标·金', 'bulb': '灯泡',
 }
+
+def configure_theme(colors, font=None, icons=None):
+    """Apply reference-derived colors and font before creating slides/icons.
+
+    Only supplied tokens change. Icon SVGs are rebuilt after color changes;
+    callers may replace or add icons for a different reference vocabulary.
+    """
+    global FONT, NAVY, WHITE, ICON_SVG
+    for key, value in colors.items():
+        if key not in C:
+            raise KeyError(f'unknown theme color: {key}')
+        value = value.lstrip('#').upper()
+        if not re.fullmatch(r'[0-9A-F]{6}', value):
+            raise ValueError(f'invalid theme color: {key}={value}')
+        C[key] = value
+    if font:
+        FONT = font
+        _fonts.clear()
+    NAVY, WHITE = '#' + C['navy'], '#' + C['white']
+    ICON_SVG.update(_builtin_icons())
+    if icons:
+        ICON_SVG.update(icons)
+
+def _browser():
+    for path in BROWSERS:
+        if Path(path).exists():
+            return path
+    raise FileNotFoundError('Chrome or Edge is required to rasterise SVG fallback images')
+
+
 class IconStore:
     """Embeds each icon once as image/svg+xml (asvg:svgBlip) with a Chrome-rendered PNG fallback."""
 
@@ -674,9 +800,11 @@ class IconStore:
         vb = [float(v) for v in re.search(r'viewBox="([^"]+)"', ICON_SVG[key]).group(1).split()]
         return vb[2], vb[3]
 
-    def render_all(self):
-        """Render all PNG fallbacks in one Chrome call (a sprite sheet), then crop."""
-        keys = list(ICON_SVG)
+    def render_all(self, keys=None):
+        """Render PNG fallbacks in one headless-browser call (a sprite sheet), then crop."""
+        keys = [k for k in (keys or ICON_SVG) if k not in self.png]
+        if not keys:
+            return
         cell = 640
         cols = 6
         rows = (len(keys) + cols - 1) // cols
@@ -689,10 +817,11 @@ class IconStore:
             imgs.append((k, x, y, w, h))
         html = ''.join(f'<img src="data:image/svg+xml;charset=utf-8,{quote(ICON_SVG[k])}" width="{w}" height="{h}" '
                        f'style="position:absolute;left:{x}px;top:{y}px">' for k, x, y, w, h in imgs)
-        page = self.tmp / 'sprite.html'
+        batch = len(self.png)
+        page = self.tmp / f'sprite{batch}.html'
         page.write_text(f'<html><body style="margin:0;background:transparent">{html}</body></html>', encoding='utf-8')
-        sheet = self.tmp / 'sprite.png'
-        subprocess.run([CHROME, '--headless=new', '--disable-gpu', '--hide-scrollbars', '--default-background-color=00000000',
+        sheet = self.tmp / f'sprite{batch}.png'
+        subprocess.run([_browser(), '--headless=new', '--disable-gpu', '--hide-scrollbars', '--default-background-color=00000000',
                         f'--window-size={cols * cell},{rows * cell}', '--force-device-scale-factor=1',
                         f'--screenshot={sheet}', page.as_uri()],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
@@ -703,7 +832,9 @@ class IconStore:
             self.png[k] = out
 
     def place(self, shapes, key, x, y, w, h, name):
-        if not self.png:
+        if key not in ICON_SVG:
+            raise KeyError(f'unknown icon {key!r}; add it via configure_theme(icons=...) or Canvas.svg()')
+        if key not in self.png:
             self.render_all()
         if h is None:
             vw, vh = self.aspect(key)
