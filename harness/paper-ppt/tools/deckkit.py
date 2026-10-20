@@ -590,184 +590,18 @@ def new_presentation(base=None, layout=None):
 
 def notes(slide, s):
     slide.notes_slide.notes_text_frame.text = s
-J = 'stroke-linejoin="round" stroke-linecap="round"'
-NAVY, WHITE = '#' + C['navy'], '#FFFFFF'
-
-
-def _svg(vb, body):
-    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}">{body}</svg>'
-
-
-def svg_robot(accent):
-    a = '#' + accent
-    return _svg('0 0 100 120',
-                f'<g stroke="{NAVY}" stroke-width="3.2" {J}>'
-                f'<line x1="50" y1="10" x2="50" y2="24"/><circle cx="50" cy="8" r="6" fill="{a}"/>'
-                f'<rect x="6" y="38" width="10" height="24" rx="4" fill="{a}"/><rect x="84" y="38" width="10" height="24" rx="4" fill="{a}"/>'
-                f'<rect x="13" y="24" width="74" height="56" rx="19" fill="{WHITE}"/>'
-                f'<path d="M18,118 Q18,86 50,86 Q82,86 82,118 Z" fill="{WHITE}"/></g>'
-                f'<rect x="24" y="35" width="52" height="32" rx="12" fill="{NAVY}"/>'
-                f'<circle cx="38" cy="51" r="5.5" fill="#{lighten(accent, 0.5)}"/><circle cx="62" cy="51" r="5.5" fill="#{lighten(accent, 0.5)}"/>')
-
-
-def svg_doc(stroke, line_color, dashed=False):
-    s, lc = '#' + stroke, '#' + line_color
-    d = ' stroke-dasharray="7 6"' if dashed else ''
-    dl = ' stroke-dasharray="6 7"' if dashed else ''
-    return _svg('0 0 80 100',
-                f'<g fill="none" stroke-width="3.2" {J}><path d="M4,4 H58 L76,22 V96 H4 Z" fill="{WHITE}" stroke="{s}"{d}/>'
-                f'<path d="M58,4 V22 H76" stroke="{s}"/>'
-                + ''.join(f'<line x1="16" y1="{y}" x2="{x2}" y2="{y}" stroke="{lc}" stroke-width="4.5"{dl}/>' for y, x2 in ((44, 64), (62, 64), (80, 42)))
-                + '</g>')
-
-
-def svg_lock(color):
-    c = '#' + color
-    return _svg('0 0 30 34', f'<g stroke="{c}" stroke-width="3" {J}><path d="M7,15 V10 A8,8 0 0 1 23,10 V15" fill="none"/>'
-                             f'<rect x="3" y="14" width="24" height="18" rx="4" fill="{WHITE}"/></g><circle cx="15" cy="23" r="2.6" fill="{c}"/>')
-
-
-def svg_eye(color):
-    c = '#' + color
-    return _svg('0 0 36 22', f'<path d="M2,11 Q18,-3 34,11 Q18,25 2,11 Z" fill="{WHITE}" stroke="{c}" stroke-width="3" {J}/>'
-                             f'<circle cx="18" cy="11" r="5" fill="{c}"/>')
-
-
-def svg_check(color):
-    c = '#' + color
-    return _svg('0 0 34 34', f'<circle cx="17" cy="17" r="15" fill="{c}" stroke="{WHITE}" stroke-width="3"/>'
-                             f'<path d="M10,17 L15,22 L24,12" fill="none" stroke="{WHITE}" stroke-width="3.6" {J}/>')
-
-
-def svg_cross(color):
-    c = '#' + color
-    return _svg('0 0 34 34', f'<circle cx="17" cy="17" r="15" fill="{c}" stroke="{WHITE}" stroke-width="3"/>'
-                             f'<path d="M11,11 L23,23 M23,11 L11,23" stroke="{WHITE}" stroke-width="3.6" {J}/>')
-
-
-def svg_warn(color):
-    c = '#' + color
-    return _svg('0 0 40 36', f'<path d="M20,3 L37,33 H3 Z" fill="{c}" stroke="{c}" stroke-width="3" {J}/>'
-                             f'<line x1="20" y1="13" x2="20" y2="22" stroke="{WHITE}" stroke-width="3.6" {J}/><circle cx="20" cy="28" r="2.2" fill="{WHITE}"/>')
-
-
-def svg_terminal():
-    b = '#' + C['blue']
-    return _svg('0 0 96 76', f'<rect x="3" y="3" width="90" height="70" rx="10" fill="{WHITE}" stroke="{NAVY}" stroke-width="3.2"/>'
-                             f'<path d="M3,20 H93" stroke="{NAVY}" stroke-width="3"/><circle cx="14" cy="12" r="3" fill="#{C["rose"]}"/>'
-                             f'<circle cx="24" cy="12" r="3" fill="#{C["gold"]}"/><circle cx="34" cy="12" r="3" fill="{b}"/>'
-                             f'<path d="M18,36 L30,46 L18,56" fill="none" stroke="{b}" stroke-width="4" {J}/>'
-                             f'<line x1="38" y1="56" x2="62" y2="56" stroke="{b}" stroke-width="4" {J}/>')
-
-
-def svg_code():
-    b = '#' + C['blue']
-    return _svg('0 0 80 100', f'<g fill="none" stroke-width="3.2" {J}><path d="M4,4 H58 L76,22 V96 H4 Z" fill="{WHITE}" stroke="{NAVY}"/>'
-                              f'<path d="M58,4 V22 H76" stroke="{NAVY}"/><path d="M28,46 L16,58 L28,70" stroke="{b}" stroke-width="4.5"/>'
-                              f'<path d="M52,46 L64,58 L52,70" stroke="{b}" stroke-width="4.5"/><path d="M44,42 L36,74" stroke="#{C["gold"]}" stroke-width="4.5"/></g>')
-
-
-def svg_chart():
-    return _svg('0 0 90 80', f'<rect x="3" y="3" width="84" height="74" rx="10" fill="{WHITE}" stroke="{NAVY}" stroke-width="3.2"/>'
-                             f'<rect x="16" y="44" width="12" height="22" rx="2" fill="#{C["neutral"]}"/><rect x="38" y="30" width="12" height="36" rx="2" fill="#{C["gold"]}"/>'
-                             f'<rect x="60" y="16" width="12" height="50" rx="2" fill="#{C["blue"]}"/>')
-
-
-def svg_pen():
-    return _svg('0 0 80 100', f'<g fill="none" stroke-width="3.2" {J}><path d="M4,4 H58 L76,22 V96 H4 Z" fill="{WHITE}" stroke="{NAVY}"/>'
-                              f'<path d="M58,4 V22 H76" stroke="{NAVY}"/><line x1="16" y1="44" x2="54" y2="44" stroke="#{C["blue"]}" stroke-width="4.5"/>'
-                              f'<line x1="16" y1="60" x2="40" y2="60" stroke="#{C["blue"]}" stroke-width="4.5"/></g>'
-                              f'<path d="M46,86 L50,72 L72,50 L80,58 L58,80 Z" fill="#{C["gold"]}" stroke="{NAVY}" stroke-width="3" {J}/>')
-
-
-def svg_search():
-    return _svg('0 0 80 80', f'<circle cx="34" cy="34" r="24" fill="{WHITE}" stroke="{NAVY}" stroke-width="4"/>'
-                             f'<circle cx="34" cy="34" r="14" fill="#{C["pale"]}"/><line x1="52" y1="52" x2="74" y2="74" stroke="{NAVY}" stroke-width="8" {J}/>')
-
-
-def svg_gear(color):
-    import math
-    c = '#' + color
-    pts = []
-    for i in range(16):
-        r = 34 if i % 2 == 0 else 26
-        a = math.pi * 2 * i / 16
-        pts.append(f'{40 + r * math.cos(a):.1f},{40 + r * math.sin(a):.1f}')
-    return _svg('0 0 80 80', f'<polygon points="{" ".join(pts)}" fill="{c}" stroke="{c}" stroke-width="6" {J}/>'
-                             f'<circle cx="40" cy="40" r="12" fill="{WHITE}"/>')
-
-
-def svg_loop():
-    b = '#' + C['blue']
-    return _svg('0 0 80 80', f'<path d="M64,30 A26,26 0 1 0 66,46" fill="none" stroke="{b}" stroke-width="6" {J}/>'
-                             f'<path d="M56,22 L66,30 L56,38" fill="none" stroke="{b}" stroke-width="6" {J}/>')
-
-
-def svg_funnel():
-    return _svg('0 0 80 84', f'<path d="M4,6 H76 L48,42 V74 L32,80 V42 Z" fill="#{C["pale"]}" stroke="{NAVY}" stroke-width="3.4" {J}/>'
-                             f'<circle cx="24" cy="18" r="4" fill="#{C["gold"]}"/><circle cx="40" cy="20" r="4" fill="#{C["blue"]}"/><circle cx="56" cy="17" r="4" fill="#{C["rose"]}"/>')
-
-
-def svg_folder():
-    return _svg('0 0 96 76', f'<path d="M4,12 Q4,6 10,6 H36 L44,16 H86 Q92,16 92,22 V66 Q92,72 86,72 H10 Q4,72 4,66 Z" fill="#{C["pale"]}" stroke="{NAVY}" stroke-width="3.2" {J}/>'
-                             f'<path d="M4,28 H92" stroke="{NAVY}" stroke-width="3"/>')
-
-
-def svg_shield():
-    return _svg('0 0 70 80', f'<path d="M35,4 L64,14 V38 Q64,62 35,76 Q6,62 6,38 V14 Z" fill="#{C["pale"]}" stroke="{NAVY}" stroke-width="3.4" {J}/>'
-                             f'<path d="M22,40 L32,50 L50,30" fill="none" stroke="#{C["blue"]}" stroke-width="5" {J}/>')
-
-
-def svg_flag():
-    return _svg('0 0 70 80', f'<line x1="12" y1="6" x2="12" y2="76" stroke="{NAVY}" stroke-width="4" {J}/>'
-                             f'<path d="M12,8 H60 L50,24 L60,40 H12 Z" fill="#{C["gold"]}" stroke="{NAVY}" stroke-width="3" {J}/>')
-
-
-def svg_star(color):
-    import math
-    c = '#' + color
-    pts = ' '.join(f'{20 + (18 if i % 2 == 0 else 8) * math.cos(-math.pi / 2 + i * math.pi / 5):.1f},'
-                   f'{20 + (18 if i % 2 == 0 else 8) * math.sin(-math.pi / 2 + i * math.pi / 5):.1f}' for i in range(10))
-    return _svg('0 0 40 40', f'<polygon points="{pts}" fill="{c}" stroke="{WHITE}" stroke-width="2" {J}/>')
-
-
-def svg_bulb():
-    return _svg('0 0 60 80', f'<path d="M30,6 A22,22 0 0 1 44,45 Q40,50 40,58 H20 Q20,50 16,45 A22,22 0 0 1 30,6 Z" fill="#{C["paleGold"]}" stroke="{NAVY}" stroke-width="3.2" {J}/>'
-                             f'<line x1="21" y1="66" x2="39" y2="66" stroke="{NAVY}" stroke-width="3.2" {J}/>'
-                             f'<line x1="24" y1="74" x2="36" y2="74" stroke="{NAVY}" stroke-width="3.2" {J}/>'
-                             f'<path d="M24,34 L30,42 L36,34" fill="none" stroke="#{C["gold"]}" stroke-width="3" {J}/>')
-
-
-def _builtin_icons():
-    """Generic starter icons drawn from the current colour roles (rebuilt by configure_theme)."""
-    return {
-        'robot_blue': svg_robot(C['blue']), 'robot_grey': svg_robot(C['neutral']), 'robot_gold': svg_robot(C['gold']),
-        'doc_grey': svg_doc(C['neutral'], C['line']), 'doc_seed': svg_doc(C['rose'], C['rose'], True), 'doc_blue': svg_doc(C['navy'], C['blue']),
-        'lock_navy': svg_lock(C['navy']), 'lock_grey': svg_lock(C['neutral']), 'eye_blue': svg_eye(C['blue']),
-        'check_blue': svg_check(C['blue']), 'cross_rose': svg_cross(C['rose']), 'warn_rose': svg_warn(C['rose']),
-        'terminal': svg_terminal(), 'code': svg_code(), 'chart': svg_chart(), 'pen': svg_pen(), 'search': svg_search(),
-        'gear_blue': svg_gear(C['blue']), 'gear_grey': svg_gear(C['neutral']), 'loop': svg_loop(), 'funnel': svg_funnel(),
-        'folder': svg_folder(), 'shield': svg_shield(), 'flag': svg_flag(), 'star_navy': svg_star(C['navy']),
-        'star_gold': svg_star(C['gold']), 'bulb': svg_bulb(),
-    }
-
-
-ICON_SVG = _builtin_icons()
-ICON_LABEL = {
-    'robot_blue': '机器人·蓝', 'robot_grey': '机器人·灰', 'robot_gold': '机器人·金', 'doc_grey': '文档·灰', 'doc_seed': '种子文档',
-    'doc_blue': '文档·蓝', 'lock_navy': '锁·深蓝', 'lock_grey': '锁·灰', 'eye_blue': '可见', 'check_blue': '对勾', 'cross_rose': '叉号',
-    'warn_rose': '警示', 'terminal': '终端', 'code': '代码', 'chart': '图表', 'pen': '写作', 'search': '检索', 'gear_blue': '齿轮·蓝',
-    'gear_grey': '齿轮·灰', 'loop': '循环', 'funnel': '漏斗', 'folder': '文件夹', 'shield': '盾牌', 'flag': '旗帜',
-    'star_navy': '星标·深蓝', 'star_gold': '星标·金', 'bulb': '灯泡',
-}
+# SVG artwork is drawn fresh for each deck (no bundled icon set): register reusable
+# pieces via configure_theme(icons=...) or embed one-off artwork with Canvas.svg().
+ICON_SVG = {}
+ICON_LABEL = {}
 
 def configure_theme(colors, font=None, icons=None):
-    """Apply reference-derived colors and font before creating slides/icons.
+    """Apply reference-derived colors and font before creating slides.
 
-    Only supplied tokens change. Icon SVGs are rebuilt after color changes;
-    callers may replace or add icons for a different reference vocabulary.
+    Only supplied tokens change. `icons` registers this deck's own SVG artwork by key
+    for cv.icon()/cv.icon_c(); there are no built-in icons.
     """
-    global FONT, NAVY, WHITE, ICON_SVG
+    global FONT
     for key, value in colors.items():
         if key not in C:
             raise KeyError(f'unknown theme color: {key}')
@@ -778,8 +612,6 @@ def configure_theme(colors, font=None, icons=None):
     if font:
         FONT = font
         _fonts.clear()
-    NAVY, WHITE = '#' + C['navy'], '#' + C['white']
-    ICON_SVG.update(_builtin_icons())
     if icons:
         ICON_SVG.update(icons)
 
@@ -833,7 +665,7 @@ class IconStore:
 
     def place(self, shapes, key, x, y, w, h, name):
         if key not in ICON_SVG:
-            raise KeyError(f'unknown icon {key!r}; add it via configure_theme(icons=...) or Canvas.svg()')
+            raise KeyError(f'unknown icon {key!r}: draw it for this deck and register it via configure_theme(icons=...), or use Canvas.svg()')
         if key not in self.png:
             self.render_all()
         if h is None:

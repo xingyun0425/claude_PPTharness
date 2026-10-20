@@ -16,6 +16,29 @@ def walk_shapes(shapes):
             yield from walk_shapes(shape.shapes)
 
 
+def count_svg(slide):
+    """SVG artwork on a slide: pictures carrying an asvg:svgBlip (what deckkit embeds)."""
+    return sum(1 for shape in walk_shapes(slide.shapes)
+               if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+               and shape._element.xpath('.//*[local-name()="svgBlip"]'))
+
+
+def illustration_plan(entry):
+    """(planned, error) for plan.illustration: a description of what to draw
+    (icon / flowchart ...), or 'none: <reason>' when the page has no illustration."""
+    value = entry.get('illustration')
+    if isinstance(value, dict):
+        value = ' '.join(str(v) for v in value.values() if v)
+    value = str(value or '').strip()
+    if not value:
+        return False, 'missing plan.illustration (what to draw, or "none: <reason>")'
+    if value.lower().startswith('none'):
+        if len(value[4:].strip(' :：-')) < 4:
+            return False, 'plan.illustration "none" needs a reason ("none: <reason>")'
+        return False, None
+    return True, None
+
+
 def validate(deck_path, plan_path):
     plan = json.loads(Path(plan_path).read_text(encoding='utf-8'))
     if not isinstance(plan, dict):
@@ -41,6 +64,9 @@ def validate(deck_path, plan_path):
         for key in ('purpose', 'source', 'reference_slide', 'adaptation'):
             if not entry.get(key):
                 errors.append(f'slide {number}: missing plan.{key}')
+        _, problem = illustration_plan(entry)
+        if problem:
+            errors.append(f'slide {number}: {problem}')
         shapes = list(walk_shapes(slide.shapes))
         if not any(s.has_text_frame and s.text.strip() for s in shapes):
             errors.append(f'slide {number}: no editable text')

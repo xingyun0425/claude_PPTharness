@@ -26,6 +26,7 @@ def main():
                 'source': 'test-paper.pdf p. 1',
                 'reference_slide': 'test-reference.pptx slide 1',
                 'adaptation': 'Use its simple title hierarchy',
+            'illustration': 'none: one-line title fixture for the builder test',
             }],
         }), encoding='utf-8')
         sys.argv = ['build_deck_template.py', str(deck)]

@@ -15,7 +15,8 @@ def line(obj):
 def main():
     print('Coordinates: 1600x900 deck px (1 px = 0.6 pt). Font sizes: points, minimum', deckkit.MIN_PT)
     print('Colour roles (set via configure_theme):', ', '.join(deckkit.C))
-    print('Built-in icons:', ', '.join(k for k in deckkit.ICON_SVG if not k.startswith('art-')))
+    print('Icons: none built in. Draw this deck'"'"'s artwork as SVG: cv.svg(markup, x, y, w) for one-off art,')
+    print('       or configure_theme(icons={key: markup}) + cv.icon_c(key, cx, cy, size) for artwork reused across slides.')
     print('\nModule functions')
     for name in ('new_presentation', 'configure_theme', 'notes', 'measure', 'wrap_lines', 'lighten', 'fpx'):
         fn = getattr(deckkit, name)

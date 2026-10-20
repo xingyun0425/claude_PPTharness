@@ -14,6 +14,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from validate_deck import count_svg, illustration_plan
+
 RENDER_W = 1600          # exported PNG width; audit coordinates use the same scale
 IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.webp')
 
@@ -87,8 +89,12 @@ def export_slides(deck, out_dir, prefix='slide', audit_json=None):
         raise RuntimeError('PowerPoint export failed:\n' + (result.stderr or result.stdout)[-2000:])
 
 
-def render(deck, out_dir, prefix='slide', audit=True, record=True):
-    """Export every slide as PNG via local PowerPoint; optionally audit layout and write review.json."""
+def render(deck, out_dir, prefix='slide', audit=True, record=True, plan=None):
+    """Export every slide as PNG via local PowerPoint; optionally audit layout and write review.json.
+
+    With `plan`, each review row also records the planned illustration and how many SVG
+    pieces were actually drawn on that slide.
+    """
     deck = Path(deck).resolve()
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -112,12 +118,17 @@ def render(deck, out_dir, prefix='slide', audit=True, record=True):
         data = json.loads(layout_file.read_text(encoding='utf-8'))
         if data.get('deck_sha256') in (None, before):
             builder_issues = {int(k): v for k, v in data.get('slides', {}).items()}
+    entries = json.loads(Path(plan).read_text(encoding='utf-8')).get('slides', []) if plan else []
+    from pptx import Presentation
+    deck_slides = list(Presentation(deck).slides)
     rows = []
     for n in range(1, count + 1):
         auto = [f'[PowerPoint] {x}' for x in found.get(n, [])] + [f'[builder] {x}' for x in builder_issues.get(n, [])]
         rows.append({'slide': n, 'image': f'{prefix}-{n:02d}.png',
                      'image_sha256': sha256(out_dir / f'{prefix}-{n:02d}.png'),
                      'density': density(out_dir / f'{prefix}-{n:02d}.png'),
+                     'illustration_planned': (entries[n - 1].get('illustration', '') if n <= len(entries) else ''),
+                     'svg_drawn': count_svg(deck_slides[n - 1]) if n <= len(deck_slides) else 0,
                      'auto_issues': auto, 'waivers': {},
                      'reviewed': False, 'assessment': '', 'issues': []})
     manifest = out_dir / 'review.json'
@@ -128,6 +139,11 @@ def render(deck, out_dir, prefix='slide', audit=True, record=True):
         print(f'  slide {n}: {x}')
     print(f'{len(flagged)} automatic layout finding(s). Fix them in the builder, or waive a specific one '
           f'in review.json "waivers" with the reason it is invisible or intended.')
+    if entries:
+        missing = [r['slide'] for r, e in zip(rows, entries) if illustration_plan(e)[0] and r['svg_drawn'] == 0]
+        print('Illustrations (SVG pieces per slide): ' + ' '.join(f"{r['slide']}:{r['svg_drawn']}" for r in rows))
+        if missing:
+            print(f'Planned illustration not drawn on slides {missing}; draw it from plan.illustration before delivery.')
     print(f'Inspect every PNG, then record reviewed/assessment/issues: {manifest}')
     return count
 
@@ -202,7 +218,7 @@ def compare(reference, ours, dest, labels=('reference', 'ours')):
 
 
 # ---------------------------------------------------------------- review gate
-def check_review(deck, manifest):
+def check_review(deck, manifest, plan=None):
     deck = Path(deck).resolve()
     manifest = Path(manifest).resolve()
     if not manifest.exists():
@@ -212,7 +228,9 @@ def check_review(deck, manifest):
     errors = []
     if record.get('deck_sha256') != sha256(deck):
         errors.append('review record does not match current PPTX; rerender and review')
-    count = len(Presentation(deck).slides)
+    deck_slides = list(Presentation(deck).slides)
+    count = len(deck_slides)
+    entries = json.loads(Path(plan).read_text(encoding='utf-8')).get('slides', []) if plan else []
     slides = record.get('slides', [])
     if len(slides) != count:
         errors.append(f'review has {len(slides)} slides, deck has {count}')
@@ -227,6 +245,9 @@ def check_review(deck, manifest):
             errors.append(f'slide {number}: visual review incomplete or issues unresolved')
         if len(row.get('assessment', '').strip()) < 20:
             errors.append(f'slide {number}: specific visual assessment missing')
+        if number <= len(entries) and illustration_plan(entries[number - 1])[0] and count_svg(deck_slides[number - 1]) == 0:
+            errors.append(f'slide {number}: planned illustration not drawn (plan: '
+                          f'"{str(entries[number - 1].get("illustration"))[:50]}"); add SVG artwork or set "none: <reason>"')
         waivers = row.get('waivers') or {}
         for issue in row.get('auto_issues', []):
             if len(str(waivers.get(issue, '')).strip()) < 10:

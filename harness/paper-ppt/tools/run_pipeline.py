@@ -111,7 +111,7 @@ def main():
             print('WARN:', warning, '(required for deliver)')
         subprocess.run([sys.executable, str(builder), str(output)], cwd=builder.parent, check=True)
         check_errors(validate(output, plan))
-        render(output, review)
+        render(output, review, plan=plan)
         ref_median = json.loads(index_file.read_text(encoding='utf-8'))['density_median']
         rows = json.loads((review / 'review.json').read_text(encoding='utf-8'))['slides']
         sparse = [r['slide'] for r in rows if r['density'] < 0.5 * ref_median]
@@ -132,7 +132,7 @@ def main():
                   'reference_sha256': fingerprint(reference),
                   'builder_sha256': sha256(state['builder'])}
         check_errors([f'{key} changed since build; rebuild and review' for key, value in checks.items() if state.get(key) != value])
-        check_errors(brief_errors(plan) + validate(output, plan) + check_review(output, review / 'review.json'))
+        check_errors(brief_errors(plan) + validate(output, plan) + check_review(output, review / 'review.json', plan))
         receipt = {'deck': str(output), 'deck_sha256': sha256(output),
                    'plan_sha256': sha256(plan), 'review_sha256': sha256(review / 'review.json'),
                    'status': 'passed', 'limitations': 'Recorded visual judgment is not an automatic design-quality score.'}

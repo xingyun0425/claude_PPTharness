@@ -11,8 +11,7 @@ metadata:
 
 1. **图标：** 浅色圆底 + 蓝色图标
    - 用 `cv.icon_c(name, cx, cy, size)` 居中放置
-   - 可用图标见 deckkit 的 `ICON_SVG` 字典（约 27 个）
-   - 常用：robot_blue、chart_blue、code、database、gear_blue、terminal、book、search、lock_navy
+   - deckkit 不再内置图标：每套 PPT 按论文内容新画 SVG（`cv.svg(markup, x, y, w)`），风格跟随本次参考
 
 2. **胶囊标签（pill）：** 圆角 999px 的文字容器
    - 用 `cv.pill(text, cx, cy, pt=16, fill=C['blue'], color='white')`
@@ -24,7 +23,7 @@ metadata:
 
 4. **箭头：** 蓝色、可选虚线、弧形
    - 直线箭头：`cv.arrow(x1, y1, x2, y2, color=C['blue'], dash=False)`
-   - 弧形箭头：`cv.arc_arrow(x1, y1, x2, y2, bend=60, dash=True, color=C['blue'])`
+   - 弧形箭头：`cv.arrow(x1, y1, x2, y2, ctrl=(cx, cy), dash=True, color=C['blue'])`
 
 5. **配色：**
    - 深蓝标题（`C['navy']` #1E3A5F）
