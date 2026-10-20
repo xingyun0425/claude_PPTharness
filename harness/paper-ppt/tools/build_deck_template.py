@@ -18,8 +18,9 @@ SLIDES = []
 # Fill from design_brief.md, i.e. from this reference, never from an earlier project:
 # {'colors': {'navy': '...', 'blue': '...', ...}, 'font': '...', 'icons': {...}}
 THEME = None
-# Path to the reference .pptx when the new deck must carry its masters (logo, header
-# band, footer); None builds on a blank 16:9 deck. Keep content clear of the decoration
+# Path to the reference .pptx when the brief keeps the reference master (logo, header
+# band, footer); None builds on a blank 16:9 deck and redraws that furniture with
+# cv.header() at the coordinates in reference_audit.json -> layouts. Keep content clear of the decoration
 # zones recorded in reference_audit.json -> layouts.
 BASE = None
 BASE_LAYOUT = None

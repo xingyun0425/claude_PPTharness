@@ -3,6 +3,7 @@
 Layout coordinates are deck pixels on a 1600x900 canvas (1 px = 0.6 pt); font sizes are
 PowerPoint points. Every text run goes through set_runs(), which rejects anything below MIN_PT.
 """
+import colorsys
 import hashlib
 import re
 import subprocess
@@ -52,6 +53,45 @@ def fpx(pt):
 
 def rgb(h):
     return RGBColor.from_string(h)
+
+
+def luminance(h):
+    """WCAG relative luminance of a hex colour (0 = black, 1 = white)."""
+    rgb = [int(h.lstrip('#')[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def shift_hue(h, degrees, hue_range=(0, 360), sat_scale=1.0, min_sat=0.1):
+    """Rotate a colour's hue while keeping its luminance, so contrast with white/black text
+    and the light-dark hierarchy of the reference survive the recolour.
+
+    Only colours whose hue lies in `hue_range` (inclusive, degrees) and whose saturation
+    exceeds `min_sat` move; greys, near-whites and other families are returned unchanged.
+    `sat_scale` softens strong mid tones: at equal saturation some hues (blue, violet)
+    read harsher than others (teal), so 0.7-0.8 is a good start when moving teal to blue.
+    """
+    h = h.lstrip('#').upper()
+    hue, light, sat = colorsys.rgb_to_hls(*[int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)])
+    lo_deg, hi_deg = hue_range
+    deg = hue * 360
+    inside = lo_deg <= deg <= hi_deg if lo_deg <= hi_deg else (deg >= lo_deg or deg <= hi_deg)
+    if not inside or sat <= min_sat:
+        return h
+    target, hue = luminance(h), (hue + degrees / 360) % 1
+    if light < 0.8:
+        sat *= sat_scale
+    lo, hi = 0.0, 1.0
+    for _ in range(40):    # bisect HLS lightness until the luminance matches the original
+        mid = (lo + hi) / 2
+        cand = '%02X%02X%02X' % tuple(round(v * 255) for v in colorsys.hls_to_rgb(hue, mid, sat))
+        lo, hi = (mid, hi) if luminance(cand) < target else (lo, mid)
+    return '%02X%02X%02X' % tuple(round(v * 255) for v in colorsys.hls_to_rgb(hue, lo, sat))
+
+
+def shift_svg_hue(markup, degrees, **kw):
+    """Apply shift_hue to every #RRGGBB colour inside SVG markup."""
+    return re.sub(r'#([0-9A-Fa-f]{6})', lambda m: '#' + shift_hue(m.group(1), degrees, **kw), markup)
 
 
 def lighten(h, t):
@@ -405,6 +445,33 @@ class Canvas:
 
     def page(self, n):
         self.text(str(n), 1516, 850, pt=16, color=C['grey'], align='r', name='页码')
+
+    def header(self, number=None, rule=None, emblem=None, page_at=(1580, 881), page_pt=16,
+               page_color=None, backdrop=None):
+        """Redraw the reference master's furniture natively on a deck built without BASE.
+
+        Take every coordinate from reference_audit.json -> layouts[].decorations so the
+        furniture sits where the reference put it. Every part is optional:
+          rule     = (x1, x2, y) or (x1, x2, y, color, lw): header hairline
+          emblem   = (svg_markup, x, y, w, h): this deck's own mark in the logo slot
+          number   = page number, right-aligned at page_at = (x_right, y_centre)
+          backdrop = [(cx, cy, r, color, alpha 0-1), ...]: soft tint discs standing in for a
+                     background photo, drawn first so content stays on top
+        """
+        for cx, cy, r, color, alpha in backdrop or []:
+            sp = self.circle(cx, cy, r, fill=color, name='底纹')
+            sf = sp._element.spPr.find(qn('a:solidFill'))
+            etree.SubElement(sf[0], qn('a:alpha'), val=str(int(alpha * 100000)))
+        if rule:
+            x1, x2, y, *style = rule
+            self.line(x1, y, x2, y, color=style[0] if style else C['navy'],
+                      lw=style[1] if len(style) > 1 else 1.25, name='页眉线')
+        if emblem:
+            markup, x, y, w, h = emblem
+            self.svg(markup, x, y, w, h, name='页眉标识')
+        if number is not None:
+            self.text(str(number), page_at[0], page_at[1], pt=page_pt,
+                      color=C['grey'] if page_color is None else page_color, align='r', name='页码')
 
     def band(self, s, y=752, h=64, x=84, w=1432, pt=20):
         self.label_box(s, x, y, w, h, pt=pt, bold=True, color=C['navy'], fill=C['pale'], name='结论条')

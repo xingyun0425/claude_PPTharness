@@ -12,6 +12,7 @@ from PIL import Image
 from validate_deck import validate
 from render_review import audit_layout, check_review, sha256
 from inspect_reference import inspect
+from deckkit import Canvas, luminance, shift_hue, shift_svg_hue
 
 
 def main():
@@ -79,6 +80,22 @@ def main():
         pic._element.getparent().remove(pic._element)
         manifest["deck_sha256"] = reviewed_hash
         review.write_text(json.dumps(manifest), encoding="utf-8")
+        teal = ["064E41", "008380", "0E6767", "EFF7F7", "98D1CC", "0070C0"]
+        moved = [shift_hue(c, 50, hue_range=(150, 215), sat_scale=0.72) for c in teal]
+        record("shift_hue keeps luminance within 1%",
+               all(abs(luminance(a) - luminance(b)) < 0.01 * max(luminance(a), 0.05) for a, b in zip(teal, moved)))
+        record("shift_hue changes the hue of colours in range", all(a != b for a, b in zip(teal, moved)))
+        record("shift_hue leaves red and greys outside the range untouched",
+               shift_hue("C00000", 50, hue_range=(150, 215)) == "C00000" and shift_hue("8A8A8A", 50) == "8A8A8A")
+        record("shift_svg_hue recolours artwork",
+               shift_svg_hue('<path fill="#008380" stroke="#C00000"/>', 50, hue_range=(150, 215)) ==
+               f'<path fill="#{shift_hue("008380", 50, hue_range=(150, 215))}" stroke="#C00000"/>')
+        hp = Presentation()
+        hs = hp.slides.add_slide(hp.slide_layouts[6])
+        Canvas(hs.shapes, None).header(7, rule=(0, 1600, 122), backdrop=[(180, 900, 420, "EFEFF7", 0.3)])
+        names = [s.name for s in hs.shapes]
+        record("header draws native rule, page number and backdrop",
+               names == ["底纹", "页眉线", "页码"] and hs.shapes[2].text_frame.text == "7")
         extents = {"slide_w": 960, "slide_h": 540, "slides": [{"slide": 1, "shapes": [
             {"text": "ok", "frame": [10, 10, 200, 30], "bound": [10, 12, 150, 24], "wrap": True},
             {"text": "clipped", "frame": [10, 100, 200, 30], "bound": [10, 100, 200, 80], "wrap": True},

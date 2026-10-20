@@ -18,7 +18,8 @@ def main():
     print('Icons: none built in. Draw this deck'"'"'s artwork as SVG: cv.svg(markup, x, y, w) for one-off art,')
     print('       or configure_theme(icons={key: markup}) + cv.icon_c(key, cx, cy, size) for artwork reused across slides.')
     print('\nModule functions')
-    for name in ('new_presentation', 'configure_theme', 'notes', 'measure', 'wrap_lines', 'lighten', 'fpx'):
+    for name in ('new_presentation', 'configure_theme', 'shift_hue', 'shift_svg_hue', 'luminance', 'notes',
+                 'measure', 'wrap_lines', 'lighten', 'fpx'):
         fn = getattr(deckkit, name)
         print(f'  {name}{inspect.signature(fn)}  # {line(fn)}')
     print('\nCanvas methods (cv = Canvas(slide.shapes, IconStore(prs, tmp)))')
