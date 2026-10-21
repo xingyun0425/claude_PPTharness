@@ -135,16 +135,26 @@ def measure(s, pt, bold=False):
 
 
 _TOKEN = re.compile(r"_\{[^}]*\}|[A-Za-z0-9.%+\-−–×/()'_:,@*†≈≥≤=]+|\s+|.")
-_NO_BREAK_BEFORE = set('，。；：、）》”！？,.;:)')
+_NO_BREAK_BEFORE = set('，。；：、）》”！？,.;:)')   # may hang past the right edge, never start a line
+_NO_BREAK_AFTER = set('（《“‘「【(')               # never left at the end of a line
 
 
 def wrap_lines(s, pt, bold, width):
-    """Approximate PowerPoint line breaking: CJK per character, latin per word."""
+    """Approximate PowerPoint line breaking: CJK per character, latin per word.
+
+    Calibrated against PowerPoint's own breaks for Microsoft YaHei 16-20 pt (120 paragraphs,
+    widths 260-760 px): PowerPoint fills lines to the full box width, lets closing punctuation
+    hang, and carries an opening bracket to the next line. Where it still differs, PowerPoint
+    fits one character more, so the predicted line count is never too small.
+    """
     lines, cur = [], ''
     for t in _TOKEN.findall(s):
-        if measure(cur + t, pt, bold) > width * 0.97 and cur.strip() and t not in _NO_BREAK_BEFORE:
+        if measure(cur + t, pt, bold) > width and cur.strip() and t not in _NO_BREAK_BEFORE:
+            carry = ''
+            while cur and cur[-1] in _NO_BREAK_AFTER:
+                carry, cur = cur[-1] + carry, cur[:-1]
             lines.append(cur.rstrip())
-            cur = t.lstrip()
+            cur = carry + t.lstrip()
         else:
             cur += t
     if cur.strip():

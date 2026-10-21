@@ -72,8 +72,62 @@ def audit_layout(data, tol=3, tol_x=16):
                 dy = min(a[3], b[3]) - max(a[1], b[1])
                 if min(a[2], b[2]) - max(a[0], b[0]) > tol and dy > max(tol, 0.25 * min(a[3] - a[1], b[3] - b[1])):
                     issues.append(f'text overlaps text: "{a[4]}" / "{b[4]}"')
+        issues += _audit_boxes(entry, scale, W * H, tol_x)
         found[int(entry['slide'])] = list(dict.fromkeys(issues))
     return found
+
+
+CONTAINER_SHAPES = {1, 5, 9}       # msoShapeRectangle, RoundedRectangle, Oval: cards, panels, chips
+COVER_TYPES = {3, 13, 28}          # chart, picture (incl. SVG), graphic; tables are reported via HasTable
+
+
+def _audit_boxes(entry, scale, slide_area, tol_x, tol_y=6):
+    """Text hidden under a later opaque shape, plain text crossing a box border, orphan last lines.
+
+    Needs the `items` list (every leaf shape in drawing order) written by ppt_render.ps1;
+    older audit files without it are skipped.
+    """
+    items = entry.get('items') or []
+    items = items if isinstance(items, list) else [items]
+    if not items:
+        return []
+    def rect(v):
+        x, y, w, h = (c * scale for c in v)
+        return x, y, x + w, y + h
+    def overlap(a, b):
+        return max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    issues = []
+    for t in items:
+        if not t.get('text') or not t.get('bound'):
+            continue
+        tb = rect(t['bound'])
+        area = max(1.0, (tb[2] - tb[0]) * (tb[3] - tb[1]))
+        label = t['text'][:24]
+        plain_text = not t.get('filled') and not t.get('outlined')
+        for b in items:
+            if b is t or b['z'] == t['z']:
+                continue
+            br = rect(b['frame'])
+            if (br[2] - br[0]) * (br[3] - br[1]) > 0.6 * slide_area:
+                continue                                   # full-bleed backgrounds are not containers
+            opaque = b.get('filled') and float(b.get('transp') or 0) < 0.5
+            shared = overlap(tb, br)
+            if shared <= 0:
+                continue
+            kind = 'picture' if b.get('type') in COVER_TYPES else 'shape'
+            if b['z'] > t['z'] and (opaque or b.get('type') in COVER_TYPES) and shared > 0.12 * area:
+                issues.append(f'text covered by a {kind} drawn on top ("{b["name"][:16]}"): "{label}"')
+            elif (b['z'] < t['z'] and plain_text and b.get('auto') in CONTAINER_SHAPES
+                  and (opaque or b.get('outlined')) and shared > 0.08 * area):
+                inside = (tb[0] >= br[0] - tol_x and tb[2] <= br[2] + tol_x
+                          and tb[1] >= br[1] - tol_y and tb[3] <= br[3] + tol_y)
+                if not inside:
+                    issues.append(f'text crosses the border of "{b["name"][:16]}": "{label}"')
+        lines = [l for l in (t.get('lines') or []) if l is not None]
+        lines = lines if isinstance(lines, list) else [lines]
+        if len(lines) > 1 and 0 < len(lines[-1].strip()) <= 2 and not lines[-1].strip().isascii():
+            issues.append(f'last line holds only "{lines[-1].strip()}" (reword or resize the box): "{label}"')
+    return issues
 
 
 # ---------------------------------------------------------------- render
